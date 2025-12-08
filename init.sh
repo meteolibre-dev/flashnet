@@ -13,9 +13,9 @@ git config --global user.email "adrienbufort@gmail.com"
 git config --global user.name "Adrien B"
 
 gh auth login
-git clone https://github.com/meteolibre-dev/meteolibre_model.git
+git clone https://github.com/meteolibre-dev/flashnet.git
 
-cd meteolibre_model/
+cd flashnet/
 pip install .
 
 hf auth login
@@ -25,7 +25,7 @@ mkdir dataset
 cd dataset
 
 # cli to download data
-hf download meteolibre-dev/weather_mtg_world_lightning_128_0dot012 --repo-type dataset --local-dir .
+hf download meteolibre-dev/weather_mtg_world_lightning_128_0dot012_full --repo-type dataset --local-dir .
 
 # if we want to use heavyball sudo apt-get -y install build-essential
 apt install gcc # for heavyball / triton
