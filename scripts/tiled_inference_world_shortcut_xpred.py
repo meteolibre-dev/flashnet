@@ -11,7 +11,7 @@ import h5py
 import yaml
 
 # Add project root to sys.path
-project_root = os.path.abspath("/workspace/meteolibre_model/")
+project_root = os.path.abspath("/workspace/flashnet/")
 sys.path.insert(0, project_root)
 
 # Load config
@@ -198,7 +198,7 @@ def main():
     parser.add_argument(
         "--nb_forecast",
         type=int,
-        default=params.get("nb_forecast", 1),
+        default=params.get("nb_forecast", 3),
         help="Number of frames to forecast per model call (from config).",
     )
     parser.add_argument(
@@ -290,7 +290,10 @@ def main():
     for i in range(args.context_frames):
         sat_frame = sat_data[i]  # (C, H, W)
         lightning_frame = lightning_data[i]  # (1, H, W)
+        
         elev_frame = elevation_data[None, :, :]  # (1, H, W)
+        elev_frame = np.where(elev_frame < 0, -100, elev_frame)
+
         sat_elev_frame = np.concatenate([sat_frame, elev_frame], axis=0)
         frame = np.concatenate([sat_elev_frame, lightning_frame], axis=0)[
             None, ...

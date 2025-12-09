@@ -20,7 +20,7 @@ sys.path.insert(0, project_root)
 config_path = os.path.join(project_root, "meteolibre_model/config/configs.yml")
 with open(config_path) as f:
     config = yaml.safe_load(f)
-params = config['model_v1_mtg_world_lightning_shortcut']
+params = config['model_v9_mtg_world_lightning_shortcut']
 context_frames = params['model']['context_frames']
 
 c_sat = params['model']['sat_in_channels']
@@ -29,7 +29,7 @@ nb_channels = c_sat + c_lightning
 
 # Define geospatial extents for Europe/Africa scale (adjust if HDF5 attrs provide exact bounds)
 LON_MIN, LON_MAX = -10, 33
-LAT_MIN, LAT_MAX = 33, 60
+LAT_MIN, LAT_MAX = 33, 65
 
 def create_video(forecast_dir, data_file, output_dir, forecast_steps, use_region=False,
                  region_start_row=None, region_end_row=None, region_start_col=None, region_end_col=None):
@@ -40,9 +40,17 @@ def create_video(forecast_dir, data_file, output_dir, forecast_steps, use_region
 
     # Load h5 data
     with h5py.File(data_file, 'r') as hf:
+
+        num_frames = hf.attrs['num_frames']
+
         sat_data = hf['sat_data'][:]
         lightning_data = hf['lightning_data'][:]
-        num_frames = hf.attrs['num_frames']
+
+        elevation_data = hf["elevation_data"][:]
+        elev_frame = elevation_data[None, None, :, :].repeat(num_frames, axis=0)  # (nbframe, 1, H, W)
+        
+        sat_data = np.concatenate([sat_data, elev_frame], axis=1)
+
 
     # Apply region focus if specified
     if use_region and all(x is not None for x in [region_start_row, region_end_row, region_start_col, region_end_col]):
@@ -77,7 +85,7 @@ def create_video(forecast_dir, data_file, output_dir, forecast_steps, use_region
     hour, minute = map(int, time_part.split('-'))
     initial_date = datetime(year, month, day, hour, minute) - timedelta(minutes=18*10) # 18 to be modify
 
-    for channel in [0, 11, 16]:
+    for channel in [0, 11, 17]:
         images = []
 
         vmin=-4 #min(np.min(forecast_channel_data), np.min(true_channel_data))
@@ -103,6 +111,7 @@ def create_video(forecast_dir, data_file, output_dir, forecast_steps, use_region
                 lightning_forecast = lightning_forecast[:, region_start_row:region_end_row, region_start_col:region_end_col]
 
             forecast_full = np.concatenate([sat_forecast, lightning_forecast], axis=0)  # (nb_channels, H, W)
+            
             forecast_channel_data = forecast_full[channel]
 
             # Load true data

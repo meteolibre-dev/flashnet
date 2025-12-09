@@ -21,6 +21,8 @@ except ImportError:
 
 
 from meteolibre_model.diffusion.utils import (
+    MEAN_CHANNEL_WORLD_ELEVATION,
+    STD_CHANNEL_WORLD_ELEVATION,
     MEAN_CHANNEL_WORLD,
     STD_CHANNEL_WORLD,
     MEAN_LIGHTNING,
@@ -37,14 +39,15 @@ def normalize(sat_data, lightning_data, device):
     """
     Normalize the batch data using precomputed mean and std.
     """
+
     sat_data = (
         sat_data
-        - MEAN_CHANNEL_WORLD.unsqueeze(0)
+        - MEAN_CHANNEL_WORLD_ELEVATION.unsqueeze(0)
         .unsqueeze(-1)
         .unsqueeze(-1)
         .unsqueeze(-1)
         .to(device)
-    ) / STD_CHANNEL_WORLD.unsqueeze(0).unsqueeze(-1).unsqueeze(-1).unsqueeze(-1).to(
+    ) / STD_CHANNEL_WORLD_ELEVATION.unsqueeze(0).unsqueeze(-1).unsqueeze(-1).unsqueeze(-1).to(
         device
     )
 
@@ -70,9 +73,9 @@ def denormalize(sat_data, lightning_data, device):
     """
     Denormalize the batch data using precomputed mean and std.
     """
-    sat_data = sat_data.to(device) * STD_CHANNEL_WORLD.unsqueeze(0).unsqueeze(
+    sat_data = sat_data.to(device) * STD_CHANNEL_WORLD_ELEVATION.unsqueeze(0).unsqueeze(
         -1
-    ).unsqueeze(-1).unsqueeze(-1).to(device) + MEAN_CHANNEL_WORLD.unsqueeze(
+    ).unsqueeze(-1).unsqueeze(-1).to(device) + MEAN_CHANNEL_WORLD_ELEVATION.unsqueeze(
         0
     ).unsqueeze(-1).unsqueeze(-1).unsqueeze(-1).to(device)
 

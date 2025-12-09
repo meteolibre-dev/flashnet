@@ -171,10 +171,9 @@ python3 -m scripts.eval_horizons --model_path models/models_world_shortcut/model
 To visualize the results:
 ```bash
 pip install imageio[ffmpeg]  
-python -m scripts.visualize_forecast_shortcut --data_file ../dataset/data_inference_full/2025-07-25_21-30_europe_full.h5
 
 
-python -m scripts.visualize_forecast_shortcut --data_file ../dataset/data_inference_full/2025-08-13_20-40_europe_full.h5 --use_region --region_start_row 1300 --region_end_row 2300 --region_start_col 200 --region_end_col 1200
+python -m scripts.visualize_forecast_clean --data_file ../dataset/data_inference_full/2025-09-04_15-00_europe_full.h5 --forecast_dir generated_forecasts_shortcut_xpred --use_region --region_start_row 450 --region_end_row 2600 --region_start_col 0 --region_end_col 3500
 ```
 
 Install uv:
