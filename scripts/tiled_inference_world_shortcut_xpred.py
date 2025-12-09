@@ -18,7 +18,7 @@ sys.path.insert(0, project_root)
 config_path = os.path.join(project_root, "meteolibre_model/config/configs.yml")
 with open(config_path) as f:
     config = yaml.safe_load(f)
-params = config["model_v8_mtg_world_lightning_shortcut"]
+params = config["model_v9_mtg_world_lightning_shortcut"]
 
 # Constants for coordinates (will be set from HDF5 file)
 from meteolibre_model.models.unet3d_film_dual import DualUNet3DFiLM
@@ -113,8 +113,10 @@ def tiled_inference(
                         initial_context, x_start, y_start, patch_size
                     )
                     result = get_position(date, lons[j], lats[j])
+                    date_noon = date.replace(hour=12, minute=0, second=0, microsecond=0)
+                    result_noon = get_position(date_noon, lons[j], lats[j])
                     spatial_position = torch.tensor(
-                        [result["azimuth"], result["altitude"], lats[j] / 10.0],
+                        [result["azimuth"], result["altitude"], result_noon["altitude"], lats[j] / 10.0],
                         device=device,
                     )
                     context_global = torch.cat(
@@ -261,7 +263,8 @@ def main():
         target_W = hf.attrs["target_width"]
         transform = hf.attrs["transform"]
         epsg = hf.attrs["epsg"]
-        c_sat = hf.attrs["num_sat_channels"]
+        elevation_data = hf["elevation_data"][:]
+        c_sat = hf.attrs["num_sat_channels"] + 1
         c_lightning = hf.attrs["num_lightning_channels"]
     if epsg != 4326:
         transformer = pyproj.Transformer.from_crs(
@@ -287,7 +290,9 @@ def main():
     for i in range(args.context_frames):
         sat_frame = sat_data[i]  # (C, H, W)
         lightning_frame = lightning_data[i]  # (1, H, W)
-        frame = np.concatenate([sat_frame, lightning_frame], axis=0)[
+        elev_frame = elevation_data[None, :, :]  # (1, H, W)
+        sat_elev_frame = np.concatenate([sat_frame, elev_frame], axis=0)
+        frame = np.concatenate([sat_elev_frame, lightning_frame], axis=0)[
             None, ...
         ]  # (1, nb_channels, H, W)
         initial_frames.append(frame)
