@@ -1,0 +1,3 @@
+- train_rf_mtg_lightning_shortcut_xpred_v2.py: training script but with 4 context frame and 3 forecasted frame
+- train_rf_mtg_lightning_shortcut_xpred_v3.py: training script but with 4 context frame and 8 forecasted frame
+on a 256x256 size image with DualUNet3DFILMTimeReduce model (time factorization).
