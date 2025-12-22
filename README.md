@@ -159,7 +159,9 @@ Doing inference:
 ```bash
 python -m scripts.tiled_inference_shortcut --denoising_steps 16 --data_file ../dataset/data_inference_full/2025-10-20_09-00_full.h5
 
-python -m scripts.tiled_inference_world_shortcut --denoising_steps 16 --data_file ../dataset/data_inference_full/2025-07-25_21-30_tropical_africa_full.h5 --model_path models/model_v1_mtg_world_lightning_shortcut_polynomial_e56.safetensors
+python -m scripts.tiled_inference_world_shortcut_xpred --denoising_steps 64 --data_file ../dataset/data_inference_full/2025-09-0112MB/s] | 3.
+8_22-50_europe_full.h5 --model_path models/models_world_shortcut/model_v10_mtg_world_lightning_shortcut_e36.safetensors --nb_forecast 8_v10_mtg
+ --patch_size 256 --batch_size 16
 
 ```
 
@@ -188,10 +190,10 @@ uvx nvitop
 
 Download model from HF:
 ```bash
-hf download meteolibre-dev/meteolibre-rectified-flow models_world_shortcut/model_v1_mtg_world_lightning_shortcut_polynomial_e56.safetensors --local-dir . --repo-type model
+hf download meteolibre-dev/flashnet models_world_shortcut/model_v1_mtg_world_lightning_shortcut_polynomial_e56.safetensors --local-dir . --repo-type model
 ```
 
 Pushing model to HF:
 ```bash
-hf upload meteolibre-dev/meteolibre-rectified-flow models/model_v5_mtg_world_lightning_shortcut_e26.safetensors models_world_shortcut/model_v5_mtg_world_lightning_shortcut_e26.safetensors --repo-type model
+hf upload meteolibre-dev/flashnet models/model_v5_mtg_world_lightning_shortcut_e26.safetensors models_world_shortcut/model_v5_mtg_world_lightning_shortcut_e26.safetensors --repo-type model
 ```
