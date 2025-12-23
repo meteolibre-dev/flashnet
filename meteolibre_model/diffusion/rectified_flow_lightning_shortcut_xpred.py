@@ -104,7 +104,7 @@ def get_x_t_rf(x0, x1, t, interpolation="linear"):
         raise ValueError(f"Unknown interpolation schedule: {interpolation}")
 
 def trainer_step(
-    model, batch, device, sigma=0.0, parametrization="standard", interpolation="linear", use_residual=True, cfg_weight=0.1
+    model, batch, device, sigma=0.0, parametrization="standard", interpolation="linear", use_residual=True
 ):
     if parametrization != "standard":
         raise ValueError("Only 'standard' parametrization is supported for x-prediction.")
@@ -127,18 +127,6 @@ def trainer_step(
         # because x_context is a view of batch_data.
         x_context += torch.randn_like(x_context) * sigma
 
-    # --- Classifier-Free Guidance: 10% chance to drop the image context ---
-    x_context_input = x_context.clone()
-    # Randomly select 10% of the batch to have masked context
-    cfg_mask = torch.rand(b, device=device) < 0.1
-    
-    # Loss coefficients: 1.0 for standard elements, cfg_weight (e.g., 0.1) for masked elements
-    loss_weights = torch.ones(b, device=device)
-    if cfg_mask.any():
-        x_context_input[cfg_mask] = CLIP_MIN
-        loss_weights[cfg_mask] = cfg_weight
-    # ----------------------------------------------------------------------
-
     if use_residual:
         x0 = batch_data[:, :, model.context_frames:] - batch_data[:, :, model.context_frames-1:model.context_frames]
     else:
@@ -155,12 +143,11 @@ def trainer_step(
 
     # ====================== EMPIRICAL (flow-matching) PART ======================
     if num_emp > 0:
-        x_context_emp = x_context_input[:num_emp]
+        x_context_emp = x_context[:num_emp]
         x0_emp = x0[:num_emp]
         x1_emp = x1[:num_emp]
         context_info_emp = context_info[:num_emp]
         mask_emp = mask_data_sat[:num_emp, :, model.context_frames:]
-        loss_weights_emp = loss_weights[:num_emp].view(num_emp, 1, 1, 1, 1)
 
         t_emp = torch.rand(num_emp, device=device)
 
@@ -199,17 +186,16 @@ def trainer_step(
         sq_err_sat = (v_sat_pred - v_sat_target) ** 2
         sq_err_light = (v_light_pred - v_light_target) ** 2
         
-        loss_sat += (sq_err_sat[mask_emp] * loss_weights_emp.expand_as(sq_err_sat)[mask_emp]).mean()
-        loss_lightning += (sq_err_light * loss_weights_emp.expand_as(sq_err_light)).mean()
+        loss_sat += sq_err_sat[mask_emp].mean()
+        loss_lightning += sq_err_light.mean()
 
     # ====================== SELF-CONSISTENCY (shortcut) PART ======================
     if num_self > 0:
-        x_context_self = x_context_input[num_emp:]
+        x_context_self = x_context[num_emp:]
         x0_self = x0[num_emp:]
         x1_self = x1[num_emp:]
         context_info_self = context_info[num_emp:]
         mask_self = mask_data_sat[num_emp:, :, model.context_frames:]
-        loss_weights_self = loss_weights[num_emp:].view(num_self, 1, 1, 1, 1)
 
         # sample d and t exactly as before
         levels = list(range(7))
@@ -261,8 +247,8 @@ def trainer_step(
         sq_err_sat_self = (s_2d[:, :c_sat] - starget[:, :c_sat]) ** 2
         sq_err_light_self = (s_2d[:, c_sat:] - starget[:, c_sat:]) ** 2
 
-        loss_sat += (sq_err_sat_self[mask_self] * loss_weights_self.expand_as(sq_err_sat_self)[mask_self]).mean()
-        loss_lightning += (sq_err_light_self * loss_weights_self.expand_as(sq_err_light_self)).mean()
+        loss_sat += sq_err_sat_self[mask_self].mean()
+        loss_lightning += sq_err_light_self.mean()
 
     return loss_sat + 1.0 * loss_lightning, loss_sat, loss_lightning
 
