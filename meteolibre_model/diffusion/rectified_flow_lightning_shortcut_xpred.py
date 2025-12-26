@@ -250,7 +250,7 @@ def trainer_step(
         loss_sat += sq_err_sat_self[mask_self].mean()
         loss_lightning += sq_err_light_self.mean()
 
-    return loss_sat + 1.0 * loss_lightning, loss_sat, loss_lightning
+    return 10. * loss_sat + 20.0 * loss_lightning, loss_sat, loss_lightning
 
 def full_image_generation(
     model,
