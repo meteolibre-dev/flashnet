@@ -18,7 +18,7 @@ sys.path.insert(0, project_root)
 config_path = os.path.join(project_root, "meteolibre_model/config/configs.yml")
 with open(config_path) as f:
     config = yaml.safe_load(f)
-params = config["model_v10_mtg_world_lightning_shortcut"]
+params = config["model_v11_mtg_world_lightning_shortcut"]
 
 # Constants for coordinates (will be set from HDF5 file)
 from meteolibre_model.models.unet3d_film_dual import DualUNet3DFiLM

@@ -159,9 +159,8 @@ Doing inference:
 ```bash
 python -m scripts.tiled_inference_shortcut --denoising_steps 16 --data_file ../dataset/data_inference_full/2025-10-20_09-00_full.h5
 
-python -m scripts.tiled_inference_world_shortcut_xpred --denoising_steps 64 --data_file ../dataset/data_inference_full/2025-09-0112MB/s] | 3.
-8_22-50_europe_full.h5 --model_path models/models_world_shortcut/model_v10_mtg_world_lightning_shortcut_e36.safetensors --nb_forecast 8_v10_mtg
- --patch_size 256 --batch_size 16
+python -m scripts.tiled_inference_world_shortcut_xpred --denoising_steps 64 --data_file ../dataset/data_inference_full/2025-09-08_22-50_europe_full.h5 --model_path models/models_world_shortcut/model_v10_mtg_world_lightning_shortcut_e36.safetensors --nb_forecast 8
+ --patch_size 128 --batch_size 64
 
 ```
 
