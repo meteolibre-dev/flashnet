@@ -23,10 +23,10 @@ from heavyball import ForeachSOAP, ForeachMuon
 from safetensors.torch import load_file
 
 # Add project root to sys.path
-project_root = os.path.abspath("/workspace/meteolibre_model/")
+project_root = os.path.abspath("/workspace/flashnet/")
 sys.path.insert(0, project_root)
 
-from meteolibre_model.dataset.dataset_mtg_lightning import MeteoLibreMapDataset
+from meteolibre_model.dataset.dataset_mtg_lightning_v2 import MeteoLibreMapDataset
 from meteolibre_model.diffusion.rectified_flow_lightning_shortcut_xpred_nocontext import (
     trainer_step,
     full_image_generation,
@@ -103,8 +103,9 @@ def main():
     # model.load_state_dict(state_dict)
 
     # Initialize optimizer
-    #optimizer = torch.optim.Adam(model.parameters(), lr=learning_rate)
-    optimizer = ForeachSOAP(model.parameters(), lr=learning_rate, foreach=False)
+    optimizer = torch.optim.AdamW(model.parameters(), lr=learning_rate)
+    #optimizer = ForeachSOAP(model.parameters(), lr=learning_rate, foreach=False)
+    
     #optimizer = torch.optim.Muon(model.parameters(), lr=learning_rate)
 
     # Prepare for distributed training
