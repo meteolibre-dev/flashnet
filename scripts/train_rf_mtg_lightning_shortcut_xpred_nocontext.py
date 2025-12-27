@@ -23,11 +23,11 @@ from heavyball import ForeachSOAP, ForeachMuon
 from safetensors.torch import load_file
 
 # Add project root to sys.path
-project_root = os.path.abspath("/workspace/flashnet/")
+project_root = os.path.abspath("/workspace/meteolibre_model/")
 sys.path.insert(0, project_root)
 
-from meteolibre_model.dataset.dataset_mtg_lightning_v2 import MeteoLibreMapDataset
-from meteolibre_model.diffusion.rectified_flow_lightning_shortcut_xpred import (
+from meteolibre_model.dataset.dataset_mtg_lightning import MeteoLibreMapDataset
+from meteolibre_model.diffusion.rectified_flow_lightning_shortcut_xpred_nocontext import (
     trainer_step,
     full_image_generation,
 )
@@ -38,7 +38,7 @@ from meteolibre_model.models.unet3d_film_dual import DualUNet3DFiLM
 config_path = os.path.join(project_root, "meteolibre_model/config/configs.yml")
 with open(config_path) as f:
     config = yaml.safe_load(f)
-params = config['model_v11_mtg_world_lightning_shortcut']
+params = config['model_v12_mtg_world_lightning_shortcut']
 
 def main():
     # Initialize Accelerator with bfloat16 precision and logging
@@ -73,7 +73,7 @@ def main():
     print("residual is :", residual)
 
     accelerator.init_trackers(
-        "lightning_shortcut-eps-prediction-training-rectified-flow_" + id_run, config=hps
+        "lightning_shortcut-nocontext-eps-prediction-training-rectified-flow_" + id_run, config=hps
     )
 
     # Initialize dataset
@@ -211,7 +211,7 @@ def main():
             if accelerator.is_main_process:
                 unwrapped_model = accelerator.unwrap_model(model)
                 # Save the EMA model's state dictionary
-                save_path = f"{MODEL_DIR}epoch_{epoch + 1}_mtg_meteofrance_.safetensors"
+                save_path = f"{MODEL_DIR}epoch_{epoch + 1}_mtg_meteofrance_nocontext_.safetensors"
                 os.makedirs(MODEL_DIR, exist_ok=True)
                 save_file(unwrapped_model.state_dict(), save_path)
                 accelerator.print(f"Model saved to {save_path}")
@@ -222,8 +222,8 @@ def main():
     # Save the model
     accelerator.wait_for_everyone()
     if accelerator.is_main_process:
-        torch.save(model.state_dict(), "meteolibre_model_rectified_flow.pth")
-        print("Training complete. Model saved to meteolibre_model_rectified_flow.pth")
+        torch.save(model.state_dict(), "meteolibre_model_rectified_flow_nocontext.pth")
+        print("Training complete. Model saved to meteolibre_model_rectified_flow_nocontext.pth")
 
 
 if __name__ == "__main__":
