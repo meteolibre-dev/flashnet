@@ -104,7 +104,7 @@ def main():
 
     # Initialize optimizer
     #optimizer = torch.optim.Adam(model.parameters(), lr=learning_rate)
-    optimizer = ForeachSOAP(model.parameters(), lr=learning_rate, foreach=False)
+    optimizer = ForeachSOAP(model.parameters(), lr=learning_rate, foreach=False, warmup_steps=100)
     #optimizer = torch.optim.Muon(model.parameters(), lr=learning_rate)
 
     # Prepare for distributed training

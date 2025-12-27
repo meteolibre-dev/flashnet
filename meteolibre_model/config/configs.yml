@@ -375,6 +375,7 @@ model_v10_mtg_world_lightning_shortcut:
   gradient_clip_value: 1.0
   residual: False
   dataset_path: "/workspace/dataset"
+  comment: "Model trained on 256x256"
   model:
     sat_in_channels: 17
     kpi_in_channels: 1
@@ -406,6 +407,7 @@ model_v11_mtg_world_lightning_shortcut:
   gradient_clip_value: 1.0
   residual: False
   dataset_path: "/workspace/dataset"
+  comment: "retrain 128x128 model but with more time: bad result"
   model:
     sat_in_channels: 17
     kpi_in_channels: 1
@@ -437,6 +439,39 @@ model_v12_mtg_world_lightning_shortcut:
   gradient_clip_value: 1.0
   residual: False
   dataset_path: "/workspace/dataset"
+  comment: "no context training"
+  model:
+    sat_in_channels: 17
+    kpi_in_channels: 1
+    sat_out_channels: 17
+    kpi_out_channels: 1
+    additional_channels: 3
+    features: [32, 64, 128, 256]
+    context_dim: 6
+    embedding_dim: 128
+    context_frames: 4
+    num_additional_resnet_blocks: 2
+    time_emb_dim: 64
+    causal: False
+
+
+model_v13_mtg_world_lightning_shortcut:
+  log_every_n_steps: 5
+  save_every_n_epochs: 1
+  model_dir: "models/"
+  parametrization: "standard"
+  interpolation: "linear"
+  batch_size: 64
+  learning_rate: 0.0003
+  num_epochs: 200
+  seed: 42
+  gen_steps: 4
+  nb_forecast: 3
+  sigma_noise_input: 0.
+  gradient_clip_value: 1.0
+  residual: False
+  dataset_path: "/workspace/dataset"
+  comment: "retrain 128x128 with lower lr 3 * 10e-4"
   model:
     sat_in_channels: 17
     kpi_in_channels: 1
