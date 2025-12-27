@@ -430,7 +430,7 @@ model_v12_mtg_world_lightning_shortcut:
   parametrization: "standard"
   interpolation: "linear"
   batch_size: 64
-  learning_rate: 0.001
+  learning_rate: 0.0001
   num_epochs: 200
   seed: 42
   gen_steps: 4
@@ -439,7 +439,7 @@ model_v12_mtg_world_lightning_shortcut:
   gradient_clip_value: 1.0
   residual: False
   dataset_path: "/workspace/dataset"
-  comment: "no context training"
+  comment: "no context training for CFG inference"
   model:
     sat_in_channels: 17
     kpi_in_channels: 1
