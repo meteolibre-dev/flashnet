@@ -103,8 +103,8 @@ def main():
     # model.load_state_dict(state_dict)
 
     # Initialize optimizer
-    optimizer = torch.optim.AdamW(model.parameters(), lr=learning_rate)
-    #optimizer = ForeachSOAP(model.parameters(), lr=learning_rate, foreach=False)
+    #optimizer = torch.optim.AdamW(model.parameters(), lr=learning_rate)
+    optimizer = ForeachSOAP(model.parameters(), lr=learning_rate, foreach=False)
     
     #optimizer = torch.optim.Muon(model.parameters(), lr=learning_rate)
 
