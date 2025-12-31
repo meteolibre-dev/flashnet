@@ -19,7 +19,7 @@ sys.path.insert(0, project_root)
 config_path = os.path.join(project_root, "meteolibre_model/config/configs.yml")
 with open(config_path) as f:
     config = yaml.safe_load(f)
-params = config["model_v11_mtg_world_lightning_shortcut"]
+params = config["model_v9_mtg_world_lightning_shortcut"]
 
 from meteolibre_model.models.unet3d_film_dual import DualUNet3DFiLM
 from meteolibre_model.diffusion.rectified_flow_lightning_shortcut_xpred import (
@@ -373,7 +373,7 @@ def main():
             s_f = sat_denorm[:, :, k, :, :]
             l_f = light_denorm[:, :, k, :, :]
             p_d = initial_date + timedelta(minutes=10 * (current_step + k + 1))
-            fname = f"forecast_cfg_{p_d.strftime('%Y%m%d%H%M')}.npz"
+            fname = f"forecast_{p_d.strftime('%Y%m%d%H%M')}.npz"
             path = os.path.join(args.output_dir, fname)
             np.savez_compressed(path, sat_forecast=s_f.squeeze(0).cpu().numpy(), lightning_forecast=l_f.squeeze(0).cpu().numpy())
             print(f"Saved forecast to {path}")
