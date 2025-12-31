@@ -40,6 +40,23 @@ def _place_patch(full_image, patch, x, y, patch_size):
     return full_image
 
 
+def get_gaussian_weights(patch_size, sigma_scale=0.3, device="cpu"):
+    """
+    Generates a 2D Gaussian weight mask.
+    sigma_scale controls the width of the gaussian. 
+    """
+    # Create a 1D Gaussian window
+    x = torch.linspace(-(patch_size - 1) / 2, (patch_size - 1) / 2, patch_size, device=device)
+    sigma = sigma_scale * patch_size
+    w_1d = torch.exp(-0.5 * (x / sigma) ** 2)
+    
+    # Create 2D mask by outer product
+    w_2d = w_1d.unsqueeze(1) * w_1d.unsqueeze(0)
+    
+    # Normalize so max is 1 (optional, but good for stability)
+    w_2d = w_2d / w_2d.max()
+    
+    return w_2d
 @torch.no_grad()
 def tiled_inference(
     model_cond,
@@ -60,13 +77,18 @@ def tiled_inference(
     nb_forecast=1,
 ):
     """
-    Tiled inference with Classifier-Free Guidance (CFG).
+    Tiled inference with Classifier-Free Guidance (CFG) and Gaussian Weighted Blending.
     """
     model_cond.eval()
     model_uncond.eval()
     
     _, C, T_ctx, H_big, W_big = initial_context.shape
     x_t_full_res = torch.randn(1, C, nb_forecast, H_big, W_big, device=device)
+    
+    # --- PRE-CALCULATE WEIGHT MASK ---
+    # Create a weight mask: (1, 1, 1, patch_size, patch_size) for broadcasting
+    patch_weights = get_gaussian_weights(patch_size, device=device)
+    patch_weights = patch_weights.view(1, 1, 1, patch_size, patch_size)
     
     # Create two grids of patches for better blending
     y_starts1 = list(range(0, H_big - patch_size + 1, patch_size))
@@ -93,8 +115,10 @@ def tiled_inference(
         t_val = 1.0 - i * d_const
         t_batch_val = torch.full((1,), t_val, device=device)
         d_batch_val = torch.full((1,), d_const, device=device)
+        
+        # Buffers for weighted averaging
         aggregated_x_pred = torch.zeros(1, C, nb_forecast, H_big, W_big, device=device)
-        overlap_counts = torch.zeros(1, 1, nb_forecast, H_big, W_big, device=device)
+        weights_sum = torch.zeros(1, 1, nb_forecast, H_big, W_big, device=device)
         
         with torch.no_grad():
             for i_batch in range(0, len(patch_coords), batch_size):
@@ -103,12 +127,13 @@ def tiled_inference(
                 pixel_xs = [x + patch_size // 2 for x, y in coords_batch]
                 pixel_ys = [y + patch_size // 2 for x, y in coords_batch]
                 lons, lats = [], []
+                
                 for j in range(len(coords_batch)):
                     px = pixel_xs[j]
                     py = pixel_ys[j]
                     x_crs = transform[0] * px + transform[1] * py + transform[2]
                     y_crs = transform[3] * px + transform[4] * py + transform[5]
-                    if epsg != 4326:
+                    if epsg != 4326 and transformer is not None:
                         lon, lat = transformer.transform(x_crs, y_crs)
                     else:
                         lon, lat = x_crs, y_crs
@@ -122,8 +147,12 @@ def tiled_inference(
                     result = get_position(date, lons[j], lats[j])
                     date_noon = date.replace(hour=12, minute=0, second=0, microsecond=0)
                     result_noon = get_position(date_noon, lons[j], lats[j])
+                    
+                    # Ensure lats[j] is extracted properly if it's a tensor or array
+                    lat_val = float(lats[j]) if hasattr(lats[j], 'item') else lats[j]
+
                     spatial_position = torch.tensor(
-                        [result["azimuth"], result["altitude"], result_noon["altitude"], lats[j] / 10.0],
+                        [result["azimuth"], result["altitude"], result_noon["altitude"], lat_val / 10.0],
                         device=device,
                     )
                     context_global = torch.cat(
@@ -152,7 +181,7 @@ def tiled_inference(
                 )
                 x_pred_cond = torch.cat([sat_pred_cond, light_pred_cond], dim=1)[:, :, T_ctx:]
                 
-                # Unconditional Prediction (Generic model with dummy context)
+                # Unconditional Prediction
                 p_ctx_uncond = torch.full_like(p_ctx_cond, CLIP_MIN)
                 model_input_uncond = torch.cat([p_ctx_uncond, p_xt], dim=2)
                 sat_pred_uncond, light_pred_uncond = model_uncond(
@@ -165,20 +194,28 @@ def tiled_inference(
                 # Classifier-Free Guidance combination
                 x_pred_batch = x_pred_uncond + cfg_weight * (x_pred_cond - x_pred_uncond)
                 
+                # --- APPLY WEIGHTED AGGREGATION ---
                 for j, (x_start, y_start) in enumerate(coords_batch):
+                    # Add weighted prediction
                     aggregated_x_pred[
                         ...,
                         y_start : y_start + patch_size,
                         x_start : x_start + patch_size,
-                    ] += x_pred_batch[j : j + 1]
-                    overlap_counts[
+                    ] += x_pred_batch[j : j + 1] * patch_weights
+                    
+                    # Add weights to the sum buffer
+                    weights_sum[
                         ...,
                         y_start : y_start + patch_size,
                         x_start : x_start + patch_size,
-                    ] += 1
+                    ] += patch_weights
         
-        overlap_counts[overlap_counts == 0] = 1
-        averaged_x_pred = aggregated_x_pred / overlap_counts
+        # Avoid division by zero
+        weights_sum[weights_sum == 0] = 1.0
+        
+        # Normalized weighted average
+        averaged_x_pred = aggregated_x_pred / weights_sum
+        
         s_theta = (x_t_full_res - averaged_x_pred) / t_val
         x_t_full_res = x_t_full_res - s_theta * d_const
         x_t_full_res = x_t_full_res.clamp(-7, 7)
@@ -191,8 +228,8 @@ def tiled_inference(
     mask = (last_context_frame == CLIP_MIN).expand(-1, -1, nb_forecast, -1, -1)
     expanded_last = last_context_frame.expand(-1, -1, nb_forecast, -1, -1)
     x_t_full_res = torch.where(mask, expanded_last, x_t_full_res)
+    
     return x_t_full_res.cpu()
-
 
 def main():
     parser = argparse.ArgumentParser(
