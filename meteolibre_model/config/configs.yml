@@ -462,7 +462,7 @@ model_v13_mtg_world_lightning_shortcut:
   parametrization: "standard"
   interpolation: "linear"
   batch_size: 64
-  learning_rate: 0.0003
+  learning_rate: 0.0001
   num_epochs: 200
   seed: 42
   gen_steps: 4
