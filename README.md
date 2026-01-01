@@ -159,8 +159,10 @@ Doing inference:
 ```bash
 python -m scripts.tiled_inference_shortcut --denoising_steps 16 --data_file ../dataset/data_inference_full/2025-10-20_09-00_full.h5
 
-python -m scripts.tiled_inference_world_shortcut_xpred --denoising_steps 64 --data_file ../dataset/data_inference_full/2025-09-08_22-50_europe_full.h5 --model_path models/models_world_shortcut/model_v10_mtg_world_lightning_shortcut_e36.safetensors --nb_forecast 3
+python -m scripts.tiled_inference_world_shortcut_xpred --denoising_steps 16 --data_file ../dataset/data_inference_full/2025-09-08_22-50_europe_full.h5 --model_path models/models_world_shortcut/model_v10_mtg_world_lightning_shortcut_e36.safetensors --nb_forecast 3
  --patch_size 128 --batch_size 64
+
+python -m scripts.tiled_inference_world_shortcut_xpred_cfg --denoising_steps 16 --data_file ../dataset/data_inference_full/2025-09-08_22-50_europe_full.h5 --nb_forecast 3 --patch_size 128 --batch_size 64 --cfg_weight 0.9 --model_path_cond models_world_shortcut/model_v9_mtg_world_lightning_shortcut_e33.safetensors --model_path_uncond models_world_shortcut/model_v12_mtg_world_lightning_shortcut_nocontext_e33.safetensors
 
 ```
 
@@ -172,7 +174,6 @@ python3 -m scripts.eval_horizons --model_path models/models_world_shortcut/model
 To visualize the results:
 ```bash
 pip install imageio[ffmpeg] cartopy
-
 
 python -m scripts.visualize_forecast_clean --data_file ../dataset/data_inference_full/2025-09-04_15-00_europe_full.h5 --forecast_dir generated_forecasts_shortcut_xpred --use_region --region_start_row 450 --region_end_row 2600 --region_start_col 0 --region_end_col 3500
 ```
