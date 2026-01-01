@@ -486,7 +486,6 @@ model_v13_mtg_world_lightning_shortcut:
     time_emb_dim: 64
     causal: False
 
-
 model_v14_mtg_world_lightning_shortcut:
   log_every_n_steps: 5
   save_every_n_epochs: 1
@@ -494,7 +493,7 @@ model_v14_mtg_world_lightning_shortcut:
   parametrization: "standard"
   interpolation: "linear"
   batch_size: 32
-  learning_rate: 0.0001
+  learning_rate: 0.0003
   num_epochs: 200
   seed: 42
   gen_steps: 4
