@@ -498,7 +498,7 @@ model_v14_mtg_world_lightning_shortcut:
   seed: 42
   gen_steps: 4
   nb_forecast: 3
-  sigma_noise_input: 0.
+  sigma_noise_input: 0.01
   gradient_clip_value: 1.0
   residual: False
   dataset_path: "/workspace/dataset"
