@@ -38,7 +38,7 @@ from meteolibre_model.models.unet3d_film_dual import DualUNet3DFiLM
 config_path = os.path.join(project_root, "meteolibre_model/config/configs.yml")
 with open(config_path) as f:
     config = yaml.safe_load(f)
-params = config['model_v13_mtg_world_lightning_shortcut']
+params = config['model_v14_mtg_world_lightning_shortcut']
 
 def main():
     # Initialize Accelerator with bfloat16 precision and logging
@@ -89,7 +89,7 @@ def main():
         dataset,
         batch_size=batch_size,
         shuffle=False,
-        num_workers=4,  # os.cpu_count() // 2,  # Use half the available CPUs
+        num_workers=8,  # os.cpu_count() // 2,  # Use half the available CPUs
         pin_memory=True,
     )
 
