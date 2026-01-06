@@ -40,6 +40,25 @@ def _place_patch(full_image, patch, x, y, patch_size):
     return full_image
 
 
+def get_gaussian_weights(patch_size, sigma_scale=0.3, device="cpu"):
+    """
+    Generates a 2D Gaussian weight mask.
+    sigma_scale controls the width of the gaussian. 
+    """
+    # Create a 1D Gaussian window
+    x = torch.linspace(-(patch_size - 1) / 2, (patch_size - 1) / 2, patch_size, device=device)
+    sigma = sigma_scale * patch_size
+    w_1d = torch.exp(-0.5 * (x / sigma) ** 2)
+    
+    # Create 2D mask by outer product
+    w_2d = w_1d.unsqueeze(1) * w_1d.unsqueeze(0)
+    
+    # Normalize so max is 1 (optional, but good for stability)
+    w_2d = w_2d / w_2d.max()
+    
+    return w_2d
+
+
 @torch.no_grad()
 def tiled_inference(
     model,
@@ -61,6 +80,12 @@ def tiled_inference(
     model.to(device)
     _, C, T_ctx, H_big, W_big = initial_context.shape
     x_t_full_res = torch.randn(1, C, nb_forecast, H_big, W_big, device=device)
+    
+    # --- PRE-CALCULATE WEIGHT MASK ---
+    # Create a weight mask: (1, 1, 1, patch_size, patch_size) for broadcasting
+    patch_weights = get_gaussian_weights(patch_size, device=device)
+    patch_weights = patch_weights.view(1, 1, 1, patch_size, patch_size)
+
     # Create two grids of patches
     # Grid 1: Standard grid
     y_starts1 = list(range(0, H_big - patch_size + 1, patch_size))
@@ -85,8 +110,11 @@ def tiled_inference(
         t_val = 1.0 - i * d_const
         t_batch_val = torch.full((1,), t_val, device=device)
         d_batch_val = torch.full((1,), d_const, device=device)
+        
+        # Buffers for weighted averaging
         aggregated_x_pred = torch.zeros(1, C, nb_forecast, H_big, W_big, device=device)
-        overlap_counts = torch.zeros(1, 1, nb_forecast, H_big, W_big, device=device)
+        weights_sum = torch.zeros(1, 1, nb_forecast, H_big, W_big, device=device)
+        
         with torch.no_grad():
             for i_batch in range(0, len(patch_coords), batch_size):
                 coords_batch = patch_coords[i_batch : i_batch + batch_size]
@@ -148,18 +176,22 @@ def tiled_inference(
                     :, :, T_ctx:, :, :
                 ]
                 for j, (x_start, y_start) in enumerate(coords_batch):
+                    # Add weighted prediction
                     aggregated_x_pred[
                         ...,
                         y_start : y_start + patch_size,
                         x_start : x_start + patch_size,
-                    ] += x_pred_batch[j : j + 1]
-                    overlap_counts[
+                    ] += x_pred_batch[j : j + 1] * patch_weights
+                    
+                    # Add weights to the sum buffer
+                    weights_sum[
                         ...,
                         y_start : y_start + patch_size,
                         x_start : x_start + patch_size,
-                    ] += 1
-        overlap_counts[overlap_counts == 0] = 1
-        averaged_x_pred = aggregated_x_pred / overlap_counts
+                    ] += patch_weights
+                    
+        weights_sum[weights_sum == 0] = 1.0
+        averaged_x_pred = aggregated_x_pred / weights_sum
         s_theta = (x_t_full_res - averaged_x_pred) / t_val
         x_t_full_res = x_t_full_res - s_theta * d_const
         x_t_full_res = x_t_full_res.clamp(-7, 7)
