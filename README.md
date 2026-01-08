@@ -1,5 +1,9 @@
 
-![videos](videos/channel_11_comparison_cleanedwebsite-ezgif.com-video-to-gif-converter.gif)
+
+
+https://github.com/user-attachments/assets/d836bac1-5dd1-46a4-909f-77fd89271252
+
+
 
 1km spatial resolution / 10min temporal resolution on whole europe.
 Trained using https://huggingface.co/datasets/meteolibre-dev/mtg_europe_128_1km
