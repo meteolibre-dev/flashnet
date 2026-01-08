@@ -97,10 +97,10 @@ def main():
     model_params = params["model"]
     model = DualUNet3DFiLM(**model_params)
 
-    # model_path = "models/epoch_6_mtg_meteofrance_.safetensors"
-    # state_dict = load_file(model_path)
+    model_path = "models/epoch_34_mtg_meteofrance_.safetensors"
+    state_dict = load_file(model_path)
     
-    # model.load_state_dict(state_dict)
+    model.load_state_dict(state_dict)
 
     # Initialize optimizer
     #optimizer = torch.optim.Adam(model.parameters(), lr=learning_rate)
