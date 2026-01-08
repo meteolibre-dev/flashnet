@@ -1,9 +1,11 @@
 
-
+Cloud cover (VIS) Prediction vs Observation:
 
 https://github.com/user-attachments/assets/d836bac1-5dd1-46a4-909f-77fd89271252
 
+Thunder cover (Accumulated flash) Prediction vs Observation:
 
+https://github.com/user-attachments/assets/3e9714ec-0465-4226-ab40-db3ae88f7a70
 
 1km spatial resolution / 10min temporal resolution on whole europe.
 Trained using https://huggingface.co/datasets/meteolibre-dev/mtg_europe_128_1km
