@@ -17,8 +17,8 @@ class DualJiT3D(nn.Module):
         kpi_in_channels: int,
         sat_out_channels: int,
         kpi_out_channels: int,
-        img_size=(6, 128, 128),
-        patch_size=(2, 16, 16),
+        img_size=(7, 128, 128),
+        patch_size=(1, 16, 16),
         embed_dim=768,
         depth=12,
         num_heads=12,
@@ -55,7 +55,7 @@ if __name__ == "__main__":
     device = "cuda" if torch.cuda.is_available() else "cpu"
     print(f"Testing DualJiT3D on {device}")
 
-    T, H, W = 6, 128, 128
+    T, H, W = 7, 128, 128
     B = 2
 
     model = DualJiT3D(

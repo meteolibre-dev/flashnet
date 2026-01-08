@@ -318,10 +318,10 @@ if __name__ == "__main__":
     device = "cuda" if torch.cuda.is_available() else "cpu"
     print(f"Testing Modern JiT-3D on {device}")
     
-    T, H, W = 6, 128, 128
+    T, H, W = 7, 128, 128
     model = JiT3D_Modern(
         img_size=(T, H, W),
-        patch_size=(2, 16, 16),
+        patch_size=(1, 16, 16),
         embed_dim=512,
         depth=4,
         num_heads=8
