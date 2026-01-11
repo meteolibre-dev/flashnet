@@ -60,52 +60,45 @@ def apply_rotary_emb(xq, xk, freqs_cis):
     xq_out = torch.view_as_real(xq_ * freqs_cis).flatten(3)
     xk_out = torch.view_as_real(xk_ * freqs_cis).flatten(3)
     return xq_out.type_as(xq), xk_out.type_as(xk)
-
 class RoPE3D(nn.Module):
     """
     Axial RoPE for 3D data (Time, Height, Width).
-    Splits head_dim into 3 chunks and applies 1D RoPE to each axis independently.
+    Splits head_dim into 3 chunks (Must be EVEN sizes) and applies 1D RoPE to each axis.
     """
     def __init__(self, head_dim, max_t, max_h, max_w, base=10000.0):
         super().__init__()
-        # Split head dimension roughly into 3
-        self.d_t = head_dim // 3
-        self.d_h = head_dim // 3
-        self.d_w = head_dim - (self.d_t + self.d_h) # Remainder goes to width
         
+        # 1. Calculate split sizes ensuring they are EVEN numbers
+        # We take the roughly 1/3rd, integer divide by 2, then multiply by 2.
+        chunk = (head_dim // 3)
+        self.d_t = (chunk // 2) * 2  # e.g., 21 -> 20
+        self.d_h = (chunk // 2) * 2  # e.g., 21 -> 20
+        self.d_w = head_dim - (self.d_t + self.d_h) # Remainder (e.g., 64 - 40 = 24)
+        
+        # Safety check
+        assert self.d_w % 2 == 0, "Width dim became odd, check head_dim vs split logic"
+
+        # 2. Register buffers
         self.register_buffer("freqs_t", precompute_freqs_cis(self.d_t, max_t, base), persistent=False)
         self.register_buffer("freqs_h", precompute_freqs_cis(self.d_h, max_h, base), persistent=False)
         self.register_buffer("freqs_w", precompute_freqs_cis(self.d_w, max_w, base), persistent=False)
 
     def forward(self, xq, xk, T, H, W):
         # xq, xk shape: (B, Num_Heads, Seq_Len, Head_Dim)
-        # Seq_Len must equal T*H*W
         
         # Split heads into axial components
         q_t, q_h, q_w = torch.split(xq, [self.d_t, self.d_h, self.d_w], dim=-1)
         k_t, k_h, k_w = torch.split(xk, [self.d_t, self.d_h, self.d_w], dim=-1)
 
-        # Reshape to 3D grid to align with precomputed freqs
-        # (B, nH, T*H*W, d) -> (B, nH, T, H, W, d)
-        B, nH, _, _ = q_t.shape
-        
-        # Apply Time RoPE
-        # We take the column corresponding to T, broadcast over H, W
-        # But standard apply_rotary expects linear sequence. 
-        # Strategy: Expand freqs to full grid (T, H, W) then flatten.
-        
-        # Construct full grid freqs
-        # freqs_t: (T, d/2). We need (T*H*W, d/2) where H and W are repeated
+        # Standard processing below...
         f_t = self.freqs_t[:T].view(T, 1, 1, -1).expand(T, H, W, -1).flatten(0, 2)
         f_h = self.freqs_h[:H].view(1, H, 1, -1).expand(T, H, W, -1).flatten(0, 2)
         f_w = self.freqs_w[:W].view(1, 1, W, -1).expand(T, H, W, -1).flatten(0, 2)
 
-        # Apply
         q_t, k_t = apply_rotary_emb(q_t, k_t, f_t)
         q_h, k_h = apply_rotary_emb(q_h, k_h, f_h)
         q_w, k_w = apply_rotary_emb(q_w, k_w, f_w)
 
-        # Concat back
         xq_out = torch.cat([q_t, q_h, q_w], dim=-1)
         xk_out = torch.cat([k_t, k_h, k_w], dim=-1)
         
@@ -300,7 +293,7 @@ class JiT3D_Modern(nn.Module):
         grid_t = T // self.patch_size[0]
         grid_h = H // self.patch_size[1]
         grid_w = W // self.patch_size[2]
-        
+
         for block in self.blocks:
             x = block(x, self.rope, grid_t, grid_h, grid_w)
 
@@ -321,14 +314,20 @@ if __name__ == "__main__":
     T, H, W = 7, 128, 128
     model = JiT3D_Modern(
         img_size=(T, H, W),
-        patch_size=(1, 16, 16),
-        embed_dim=512,
-        depth=4,
-        num_heads=8
+        patch_size=(1, 8, 8),
+        embed_dim=768,
+        depth=12,
+        num_heads=12
     ).to(device)
 
-    x = torch.randn(2, 3, T, H, W).to(device)
-    t = torch.randn(2, 128).to(device) # Context
+    # --- Count Parameters ---
+    total_params = sum(p.numel() for p in model.parameters() if p.requires_grad)
+    print(f"Total Trainable Parameters: {total_params:,}")  # Prints e.g., "12,450,800"
+    print(f"Model Size (approx): {total_params * 4 / 1024**2:.2f} MB (FP32)")
+    # ------------------------
+
+    x = torch.randn(32, 3, T, H, W).to(device)
+    t = torch.randn(32, 128).to(device) # Context
 
     out = model(x, t)
     print(f"Output shape: {out.shape}")

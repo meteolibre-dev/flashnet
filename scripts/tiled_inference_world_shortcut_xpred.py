@@ -273,7 +273,12 @@ def main():
     os.makedirs(args.output_dir, exist_ok=True)
     # Initialize model
     model_params = params["model"]
-    model = DualUNet3DFiLM(**model_params)
+
+    if params["model_type"] == "jit":
+        model = DualJiT3D(**model_params)
+    else:
+        model = DualUNet3DFiLM(**model_params)
+
     # Load model weights
     if os.path.exists(args.model_path):
         loaded_state_dict = load_file(args.model_path)

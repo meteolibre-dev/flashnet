@@ -24,9 +24,11 @@ class DualJiT3D(nn.Module):
         num_heads=12,
         context_dim=128,
         time_emb_dim=64,
+        context_frames = 4,
     ):
         super().__init__()
         self.sat_out_channels = sat_out_channels
+        self.context_frames = context_frames
 
         self.kpi_encoder = nn.Conv3d(kpi_in_channels, sat_in_channels, kernel_size=1)
 
@@ -64,7 +66,7 @@ if __name__ == "__main__":
         sat_out_channels=3,
         kpi_out_channels=2,
         img_size=(T, H, W),
-        patch_size=(2, 16, 16),
+        patch_size=(1, 16, 16),
         embed_dim=512,
         depth=4,
         num_heads=8,

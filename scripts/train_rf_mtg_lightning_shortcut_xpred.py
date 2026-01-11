@@ -19,6 +19,7 @@ from safetensors.torch import save_file
 
 # custom optimizer TO REMOVE ?
 from heavyball import ForeachSOAP, ForeachMuon
+from torch.optim import Muon
 
 from safetensors.torch import load_file
 
@@ -33,12 +34,13 @@ from meteolibre_model.diffusion.rectified_flow_lightning_shortcut_xpred import (
 )
 
 from meteolibre_model.models.unet3d_film_dual import DualUNet3DFiLM
+from meteolibre_model.models.jit3d_dual import DualJiT3D
 
 # Load config
 config_path = os.path.join(project_root, "meteolibre_model/config/configs.yml")
 with open(config_path) as f:
     config = yaml.safe_load(f)
-params = config['model_v14_mtg_world_lightning_shortcut']
+params = config['model_v15_mtg_world_lightning_shortcut']
 
 def main():
     # Initialize Accelerator with bfloat16 precision and logging
@@ -46,6 +48,7 @@ def main():
 
     accelerator = Accelerator(
         mixed_precision="bf16",
+        gradient_accumulation_steps=2,
         log_with="tensorboard",
         project_dir=".",
         kwargs_handlers=[kwargs],
@@ -89,26 +92,77 @@ def main():
         dataset,
         batch_size=batch_size,
         shuffle=False,
-        num_workers=8,  # os.cpu_count() // 2,  # Use half the available CPUs
+        num_workers=16,  # os.cpu_count() // 2,  # Use half the available CPUs
         pin_memory=True,
     )
 
     # Initialize model
     model_params = params["model"]
-    model = DualUNet3DFiLM(**model_params)
 
-    model_path = "models/epoch_34_mtg_meteofrance_.safetensors"
+    def get_grouped_params(model):
+        """Splits params into 2D (for Muon) and others (for AdamW)."""
+        muon_params = []
+        adamw_params = []
+        for name, p in model.named_parameters():
+            if not p.requires_grad:
+                continue
+            if p.ndim == 2:
+                muon_params.append(p)
+            else:
+                adamw_params.append(p)
+        return muon_params, adamw_params
+
+    class CombinedOptimizer:
+        """Wrapper to make a list of optimizers behave like a single one."""
+        def __init__(self, optimizers):
+            self.optimizers = optimizers
+        
+        def step(self):
+            for opt in self.optimizers:
+                opt.step()
+                
+        def zero_grad(self):
+            for opt in self.optimizers:
+                opt.zero_grad()
+
+        # Optional: proxies for state dicts if needed for checkpointing
+        def state_dict(self):
+            return [opt.state_dict() for opt in self.optimizers]
+
+        def load_state_dict(self, state_dicts):
+            for opt, state in zip(self.optimizers, state_dicts):
+                opt.load_state_dict(state)
+
+    if params["model_type"] == "jit":
+        model = DualJiT3D(**model_params)
+
+        model = torch.compile(model)
+
+        # Split params: Muon only accepts strictly 2D tensors
+        muon_params, adamw_params = get_grouped_params(model)
+        
+        # 1. Muon for Transformer Internals (Matrices)
+        # Note: Adjust momentum/nesterov args as per your Heavyball version if needed
+        opt_muon = Muon(muon_params, lr=learning_rate, momentum=0.95, weight_decay=0.1)
+        
+        # 2. AdamW for Conv3d, Embeddings, Norms, Biases
+        # Usually AdamW needs a lower LR than Muon
+        opt_adam = torch.optim.AdamW(adamw_params, lr=learning_rate / 3, weight_decay=0.01)
+        
+        # Create a list for Accelerate
+        optimizer = [opt_muon, opt_adam]
+    else:
+        model = DualUNet3DFiLM(**model_params)
+        optimizer = ForeachSOAP(model.parameters(), lr=learning_rate, foreach=False, warmup_steps=100)
+
+    model_path = "models/epoch_96_mtg_meteofrance_.safetensors"
     state_dict = load_file(model_path)
     
     model.load_state_dict(state_dict)
-
-    # Initialize optimizer
-    #optimizer = torch.optim.Adam(model.parameters(), lr=learning_rate)
-    optimizer = ForeachSOAP(model.parameters(), lr=learning_rate, foreach=False, warmup_steps=100)
-    #optimizer = torch.optim.Muon(model.parameters(), lr=learning_rate)
-
-    # Prepare for distributed training
     model, optimizer, dataloader = accelerator.prepare(model, optimizer, dataloader)
+
+    if isinstance(optimizer, list):
+        optimizer = CombinedOptimizer(optimizer)
 
     global_step = 0
 
