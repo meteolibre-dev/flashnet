@@ -18,10 +18,11 @@ sys.path.insert(0, project_root)
 config_path = os.path.join(project_root, "meteolibre_model/config/configs.yml")
 with open(config_path) as f:
     config = yaml.safe_load(f)
-params = config["model_v14_mtg_world_lightning_shortcut"]
+params = config["model_v15_mtg_world_lightning_shortcut"]
 
 # Constants for coordinates (will be set from HDF5 file)
 from meteolibre_model.models.unet3d_film_dual import DualUNet3DFiLM
+from meteolibre_model.models.jit3d_dual import DualJiT3D
 from meteolibre_model.diffusion.rectified_flow_lightning_shortcut_xpred import (
     normalize,
     denormalize,
@@ -30,6 +31,7 @@ from meteolibre_model.diffusion.rectified_flow_lightning_shortcut_xpred import (
 
 from safetensors.torch import load_file
 
+torch.set_float32_matmul_precision('medium')
 
 def _extract_patch(image, x, y, patch_size):
     return image[..., y : y + patch_size, x : x + patch_size]
@@ -276,12 +278,14 @@ def main():
 
     if params["model_type"] == "jit":
         model = DualJiT3D(**model_params)
+        model = torch.compile(model)
     else:
         model = DualUNet3DFiLM(**model_params)
 
     # Load model weights
     if os.path.exists(args.model_path):
         loaded_state_dict = load_file(args.model_path)
+
         model.load_state_dict(loaded_state_dict)
         print(f"Loaded model weights from {args.model_path}")
     else:

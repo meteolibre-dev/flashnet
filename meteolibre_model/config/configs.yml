@@ -525,7 +525,7 @@ model_v15_mtg_world_lightning_shortcut:
   parametrization: "standard"
   interpolation: "linear"
   batch_size: 128
-  learning_rate: 0.00005
+  learning_rate: 0.000005
   num_epochs: 200
   seed: 42
   gen_steps: 4
