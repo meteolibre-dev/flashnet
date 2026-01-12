@@ -1,0 +1,34 @@
+# FlashNet Backend Dependencies
+# Additional dependencies for the weather forecasting backend service
+
+# Web framework
+fastapi>=0.109.0
+uvicorn[standard]>=0.27.0
+python-multipart>=0.0.9
+
+# GCP
+google-cloud-storage>=2.14.0
+google-auth>=2.27.0
+
+# Configuration
+pydantic>=2.5.0
+pydantic-settings>=2.1.0
+
+# Async support
+aiofiles>=23.2.1
+
+# Utilities
+tenacity>=8.2.0
+aiohttp>=3.9.0
+
+# Data processing (already in main requirements)
+# numpy>=1.26.0
+# h5py>=3.10.0
+
+# ML inference (already in main requirements)
+# torch>=2.1.0
+
+# Testing
+pytest>=7.4.0
+pytest-asyncio>=0.23.0
+httpx>=0.26.0

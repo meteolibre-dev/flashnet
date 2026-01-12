@@ -1,0 +1,73 @@
+version: '3.8'
+
+services:
+  flashnet-backend:
+    build:
+      context: .
+      dockerfile: backend/Dockerfile
+      target: runtime-cuda
+    container_name: flashnet-backend
+    ports:
+      - "8080:8080"
+    volumes:
+      - ./models:/app/models:ro
+      - flashnet-cache:/tmp/flashnet_cache
+      - ./backend/.env:/app/.env:ro
+    environment:
+      - CUDA_VISIBLE_DEVICES=0
+      - MODEL_PATH=/app/models/latest.safetensors
+      - SERVER_HOST=0.0.0.0
+      - SERVER_PORT=8080
+      - LOG_LEVEL=INFO
+      - CACHE_DIR=/tmp/flashnet_cache
+      - GCP_SOURCE_BUCKET=eumetsat_mtg_preprocess
+      - GCP_SOURCE_PREFIX=inference_h5
+      - GCP_DEST_BUCKET=inference_result
+      - GCP_DEST_PREFIX=forecasts
+    deploy:
+      resources:
+        reservations:
+          devices:
+            - driver: nvidia
+              count: 1
+              capabilities: [gpu]
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://localhost:8080/health')"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 60s
+
+  flashnet-backend-cpu:
+    build:
+      context: .
+      dockerfile: backend/Dockerfile
+      target: runtime-cpu
+    container_name: flashnet-backend-cpu
+    ports:
+      - "8081:8080"
+    volumes:
+      - ./models:/app/models:ro
+      - flashnet-cache:/tmp/flashnet_cache
+      - ./backend/.env:/app/.env:ro
+    environment:
+      - MODEL_PATH=/app/models/latest.safetensors
+      - SERVER_HOST=0.0.0.0
+      - SERVER_PORT=8080
+      - LOG_LEVEL=INFO
+      - CACHE_DIR=/tmp/flashnet_cache
+      - GCP_SOURCE_BUCKET=eumetsat_mtg_preprocess
+      - GCP_SOURCE_PREFIX=inference_h5
+      - GCP_DEST_BUCKET=inference_result
+      - GCP_DEST_PREFIX=forecasts
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://localhost:8080/health')"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 60s
+
+volumes:
+  flashnet-cache:
