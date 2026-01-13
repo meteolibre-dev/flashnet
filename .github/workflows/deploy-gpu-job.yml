@@ -61,6 +61,7 @@ jobs:
             --memory 16Gi \
             --gpu 1 \
             --gpu-type nvidia-l4 \
+            --no-gpu-zonal-redundancy \
             --set-env-vars "MODE=cli,LOG_LEVEL=INFO" \
             --set-secrets "GCP_CREDENTIALS=GCP-CREDENTIALS-SECRET:latest" \
             --task-timeout 3600 \
