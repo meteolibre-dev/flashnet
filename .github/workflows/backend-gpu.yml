@@ -89,7 +89,7 @@ jobs:
             --cpu 4 \
             --memory 16Gi \
             --gpu 1 \
-            --gpu-type nvidia-tesla-t4 \
+            --gpu-type nvidia-l4 \
             --set-env-vars "MODE=cli,LOG_LEVEL=INFO" \
             --set-secrets "GCP_CREDENTIALS=GCP-CREDENTIALS-SECRET:latest" \
             --task-timeout 3600 \
