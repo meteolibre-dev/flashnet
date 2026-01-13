@@ -153,8 +153,8 @@ def process_date_pipeline(target_date: datetime) -> dict:
         # Setup GCP client
         gcs_client = setup_gcp_client()
 
-        # Download latest H5 file
-        pattern = target_date.strftime("%Y-%m-%d_%H-") + "*.h5"
+        # Download latest H5 file (search whole day, get most recent)
+        pattern = target_date.strftime("%Y-%m-%d") + "_*.h5"
         data_path = download_latest_h5(gcs_client, pattern=pattern)
 
         # Run inference
@@ -209,24 +209,24 @@ from typing import Optional
 import uvicorn
 
 
-web_app = FastAPI(title="FlashNet Backend")
+app = FastAPI(title="FlashNet Backend")
 
 
 class ProcessRequest(BaseModel):
     date: Optional[str] = None  # Format YYYY-MM-DD HH:MM:SS
 
 
-@web_app.get("/")
+@app.get("/")
 def health_check():
     return {"status": "ok", "service": "flashnet-backend"}
 
 
-@web_app.get("/health")
+@app.get("/health")
 def health():
     return {"status": "healthy"}
 
 
-@web_app.post("/pipeline/run")
+@app.post("/pipeline/run")
 def run_pipeline(request: ProcessRequest):
     """Trigger the pipeline via HTTP."""
     try:

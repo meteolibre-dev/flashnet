@@ -5,7 +5,7 @@ Backend package for FlashNet weather forecasting service.
 from .config import get_config, Config
 from .gcp_client import get_gcs_client, GCPStorageClient, GCSFileInfo
 from .inference_engine import InferenceEngine, InferenceResult, InferenceStatus
-from .main import app, create_app
+from .main import app
 
 __all__ = [
     "get_config",
@@ -17,5 +17,4 @@ __all__ = [
     "InferenceResult",
     "InferenceStatus",
     "app",
-    "create_app",
 ]

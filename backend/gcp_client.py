@@ -237,14 +237,14 @@ class GCPStorageClient:
         pattern: str,
         bucket_name: Optional[str] = None
     ) -> List[GCSFileInfo]:
-        """Get files matching a pattern.
+        """Get files matching a pattern, sorted by most recent first.
 
         Args:
             pattern: Glob-style pattern (e.g., "2026-01-12_*.h5")
             bucket_name: Bucket name. Uses config source_bucket if not provided.
 
         Returns:
-            List of matching GCSFileInfo objects.
+            List of matching GCSFileInfo objects, sorted by most recent first.
         """
         import fnmatch
 
@@ -254,6 +254,9 @@ class GCPStorageClient:
             f for f in files
             if fnmatch.fnmatch(f.name, pattern)
         ]
+
+        # Sort by updated time, most recent first
+        matching.sort(key=lambda f: f.updated, reverse=True)
 
         return matching
 
