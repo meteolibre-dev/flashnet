@@ -1,0 +1,159 @@
+name: Deploy Cloud Run GPU Job
+
+on:
+  workflow_dispatch:
+    inputs:
+      image_tag:
+        description: 'Image tag to deploy (default: latest)'
+        required: false
+        default: 'latest'
+        type: string
+
+env:
+  PROJECT_ID: meteoforecast
+  GAR_LOCATION: europe-west3
+  SERVICE: flashnet-backend
+  REPOSITORY: flashnet-repo
+  JOB_NAME: flashnet-backend-gpu-job
+  IMAGE_NAME: flashnet-backend
+
+jobs:
+  deploy-cloud-run-gpu-job:
+    name: Deploy Cloud Run GPU Job
+    runs-on: ubuntu-latest
+    permissions:
+      contents: 'read'
+      id-token: 'write'
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Google Auth
+        id: auth
+        uses: 'google-github-actions/auth@v2'
+        with:
+          credentials_json: '${{ secrets.GCP_CREDENTIALS }}'
+
+      - name: 'Set up Cloud SDK'
+        uses: 'google-github-actions/setup-gcloud@v2'
+
+      - name: Get Short Git SHA
+        id: git-sha
+        run: echo "SHORT_SHA=$(git rev-parse --short HEAD)" >> $GITHUB_OUTPUT
+
+      - name: Determine Image Tag
+        id: image
+        run: |
+          IMAGE_TAG="${{ github.event.inputs.image_tag }}"
+          if [ "$IMAGE_TAG" = "latest" ]; then
+            IMAGE_TAG="${{ steps.git-sha.outputs.SHORT_SHA }}"
+          fi
+          echo "IMAGE_TAG=$IMAGE_TAG" >> $GITHUB_OUTPUT
+          echo "Using image tag: $IMAGE_TAG"
+
+      - name: 'Deploy Cloud Run GPU Job'
+        run: |
+          gcloud run jobs deploy ${{ env.JOB_NAME }} \
+            --image ${{ env.GAR_LOCATION }}-docker.pkg.dev/${{ env.PROJECT_ID }}/${{ env.REPOSITORY }}/${{ env.IMAGE_NAME }}:${{ steps.image.outputs.IMAGE_TAG }} \
+            --region ${{ env.GAR_LOCATION }} \
+            --project ${{ env.PROJECT_ID }} \
+            --cpu 4 \
+            --memory 16Gi \
+            --gpu 1 \
+            --gpu-type nvidia-l4 \
+            --set-env-vars "MODE=cli,LOG_LEVEL=INFO" \
+            --set-secrets "GCP_CREDENTIALS=GCP-CREDENTIALS-SECRET:latest" \
+            --task-timeout 3600 \
+            --max-retries 2 \
+            --execution-environment=gen2 \
+            --service-account=flashnet-backend@${{ env.PROJECT_ID }}.iam.gserviceaccount.com
+
+      - name: 'Verify GPU Deployment'
+        run: |
+          echo "Job deployed. GPU configuration:"
+          gcloud run jobs describe ${{ env.JOB_NAME }} \
+            --region ${{ env.GAR_LOCATION }} \
+            --format="get(template.spec.containers[0].resources.limits)"
+
+  execute-cloud-run-job:
+    name: Execute Cloud Run GPU Job
+    needs: deploy-cloud-run-gpu-job
+    runs-on: ubuntu-latest
+    permissions:
+      contents: 'read'
+      id-token: 'write'
+    steps:
+      - name: Google Auth
+        id: auth
+        uses: 'google-github-actions/auth@v2'
+        with:
+          credentials_json: '${{ secrets.GCP_CREDENTIALS }}'
+
+      - name: 'Set up Cloud SDK'
+        uses: 'google-github-actions/setup-gcloud@v2'
+
+      - name: 'Execute Job'
+        id: execute
+        run: |
+          EXECUTION=$(gcloud run jobs execute ${{ env.JOB_NAME }} \
+            --region ${{ env.GAR_LOCATION }} \
+            --project ${{ env.PROJECT_ID }} \
+            --format="value(name)")
+          echo "EXECUTION_NAME=$EXECUTION" >> $GITHUB_OUTPUT
+          echo "Execution started: $EXECUTION"
+
+      - name: 'Wait for Job Completion'
+        run: |
+          echo "Waiting for job completion..."
+          gcloud run jobs executions wait ${{ steps.execute.outputs.EXECUTION_NAME }} \
+            --region ${{ env.GAR_LOCATION }} \
+            --project ${{ env.PROJECT_ID }}
+
+      - name: 'Check Job Status'
+        run: |
+          STATUS=$(gcloud run jobs executions describe ${{ steps.execute.outputs.EXECUTION_NAME }} \
+            --region ${{ env.GAR_LOCATION }} \
+            --project ${{ env.PROJECT_ID }} \
+            --format="get(status)")
+          echo "Job final status: $STATUS"
+          if [ "$STATUS" != "Succeeded" ]; then
+            echo "Job failed!"
+            exit 1
+          fi
+          echo "Job completed successfully!"
+
+  cleanup-old-jobs:
+    name: Cleanup Old Job Executions
+    needs: execute-cloud-run-job
+    runs-on: ubuntu-latest
+    permissions:
+      contents: 'read'
+      id-token: 'write'
+    if: always()
+    steps:
+      - name: Google Auth
+        id: auth
+        uses: 'google-github-actions/auth@v2'
+        with:
+          credentials_json: '${{ secrets.GCP_CREDENTIALS }}'
+
+      - name: 'Set up Cloud SDK'
+        uses: 'google-github-actions/setup-gcloud@v2'
+
+      - name: 'Cleanup Old Executions'
+        run: |
+          echo "Cleaning up old job executions (keeping last 5)..."
+          EXECUTIONS=$(gcloud run jobs executions list \
+            --region ${{ env.GAR_LOCATION }} \
+            --project ${{ env.PROJECT_ID }} \
+            --format="value(name)" | tail -n +6)
+
+          for EXECUTION in $EXECUTIONS; do
+            echo "Deleting execution: $EXECUTION"
+            gcloud run jobs executions delete $EXECUTION \
+              --region ${{ env.GAR_LOCATION }} \
+              --project ${{ env.PROJECT_ID }} \
+              --quiet || true
+          done
+
+          echo "Cleanup completed"
