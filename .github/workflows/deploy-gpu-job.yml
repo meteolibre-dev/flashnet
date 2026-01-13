@@ -106,9 +106,17 @@ jobs:
       - name: 'Wait for Job Completion'
         run: |
           echo "Waiting for job completion..."
-          gcloud run jobs executions wait ${{ steps.execute.outputs.EXECUTION_NAME }} \
-            --region ${{ env.GAR_LOCATION }} \
-            --project ${{ env.PROJECT_ID }}
+          for i in {1..120}; do
+            STATUS=$(gcloud run jobs executions describe ${{ steps.execute.outputs.EXECUTION_NAME }} \
+              --region ${{ env.GAR_LOCATION }} \
+              --project ${{ env.PROJECT_ID }} \
+              --format="get(status)")
+            echo "Status: $STATUS"
+            if [ "$STATUS" = "Succeeded" ] || [ "$STATUS" = "Failed" ]; then
+              break
+            fi
+            sleep 30
+          done
 
       - name: 'Check Job Status'
         run: |

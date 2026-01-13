@@ -63,12 +63,6 @@ COPY --chown=appuser:appuser backend/ ./backend/
 
 # Switch to non-root user
 USER appuser
-
-# Health check (for Cloud Run)
-HEALTHCHECK --interval=60s --timeout=30s --start-period=120s --retries=3 \
-    CMD python -c "import urllib.request; urllib.request.urlopen('http://localhost:8080/health')" || exit 1
-
-# Environment variables
 ENV MODE=cli
 ENV LOG_LEVEL=INFO
 ENV CACHE_DIR=/tmp/flashnet_cache
@@ -110,10 +104,6 @@ COPY --chown=appuser:appuser backend/ ./backend/
 
 # Switch to non-root user
 USER appuser
-
-# Health check
-HEALTHCHECK --interval=60s --timeout=30s --start-period=120s --retries=3 \
-    CMD python -c "import urllib.request; urllib.request.urlopen('http://localhost:8080/health')" || exit 1
 
 # Environment variables
 ENV MODE=cli
