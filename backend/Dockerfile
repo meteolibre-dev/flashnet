@@ -164,10 +164,4 @@ ENV MODE=dev
 ENV LOG_LEVEL=DEBUG
 ENV SERVER_RELOAD=true
 
-CMD ["python3", "-c", "
-import uvicorn
-import sys
-sys.path.insert(0, '/app')
-from backend.main import web_app
-uvicorn.run(web_app, host='0.0.0.0', port=8080, reload=True)
-"]
+CMD ["python3", "-c", "import uvicorn; import sys; sys.path.insert(0, '/app'); from backend.main import web_app; uvicorn.run(web_app, host='0.0.0.0', port=8080, reload=True)"]
