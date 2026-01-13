@@ -1,38 +1,21 @@
 """
-FlashNet weather forecasting backend service.
+FlashNet CLI for running weather forecast inference pipeline.
 
-This service provides a REST API for:
-1. Retrieving the latest H5 files from GCP bucket
-2. Running tiled inference for weather forecasting
-3. Pushing results back to GCP bucket
+Usage:
+    python main.py --mode=cli --date="2026-01-12 13:40:00"
+    python main.py --mode=web  # FastAPI server for health checks
 """
 
 import os
 import sys
 import logging
-import uuid
+import argparse
+from datetime import datetime, timedelta
 from pathlib import Path
-from datetime import datetime
-from typing import Optional, Dict, Any
-from concurrent.futures import ThreadPoolExecutor
-from contextlib import asynccontextmanager
 
-import aiofiles
-import numpy as np
-
-# Add project root to sys.path
-project_root = os.path.abspath(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+# Add project root to path
+project_root = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 sys.path.insert(0, project_root)
-
-from fastapi import FastAPI, HTTPException, BackgroundTasks, Request
-from fastapi.middleware.cors import CORSMiddleware
-from fastapi.responses import FileResponse, JSONResponse
-from pydantic import BaseModel, Field
-from typing import List
-
-from backend.config import get_config, Config
-from backend.gcp_client import get_gcs_client, GCPStorageClient, GCSFileInfo
-from backend.inference_engine import InferenceEngine, InferenceResult, InferenceStatus
 
 # Configure logging
 logging.basicConfig(
@@ -41,390 +24,296 @@ logging.basicConfig(
 )
 logger = logging.getLogger(__name__)
 
-
-class InferenceTask(BaseModel):
-    """Model for inference task submission."""
-    file_pattern: Optional[str] = Field(
-        None,
-        description="Pattern to match files (e.g., '2026-01-12_*.h5'). Uses latest if not provided."
-    )
-    forecast_steps: int = Field(18, ge=1, le=100, description="Number of forecast steps")
-    nb_forecast: int = Field(3, ge=1, le=10, description="Frames per forecast batch")
+# Disable HDF5 file locking
+os.environ["HDF5_USE_FILE_LOCKING"] = "FALSE"
+os.environ["HDF5_PLUGIN_PATH"] = ""
 
 
-class InferenceTaskResponse(BaseModel):
-    """Response for task submission."""
-    task_id: str
-    status: str
-    message: str
-    file_info: Optional[Dict[str, Any]] = None
+def setup_gcp_client():
+    """Initialize GCP client with credentials from environment."""
+    from backend.gcp_client import GCPStorageClient
+    from backend.config import get_config
 
-
-class TaskStatusResponse(BaseModel):
-    """Response for task status query."""
-    task_id: str
-    status: str
-    message: Optional[str] = None
-    metrics: Optional[Dict[str, Any]] = None
-    output_files: Optional[List[str]] = None
-    created_at: Optional[datetime] = None
-    completed_at: Optional[datetime] = None
-
-
-class HealthResponse(BaseModel):
-    """Response for health check."""
-    status: str
-    model_loaded: bool
-    gcp_connected: bool
-    timestamp: datetime
-
-
-# Global state
-_executor = ThreadPoolExecutor(max_workers=1)
-_running_tasks: Dict[str, InferenceResult] = {}
-_inference_engine: Optional[InferenceEngine] = None
-
-
-def get_inference_engine() -> InferenceEngine:
-    """Get or create the inference engine."""
-    global _inference_engine
-    if _inference_engine is None:
-        config = get_config()
-        _inference_engine = InferenceEngine(
-            model_path=config.model.model_path,
-            model_type=config.model.model_type,
-            patch_size=config.model.patch_size,
-            denoising_steps=config.model.denoising_steps,
-            batch_size=config.model.batch_size,
-            context_frames=config.model.context_frames,
-            use_residual=config.model.use_residual
-        )
-    return _inference_engine
-
-
-def cleanup_old_tasks(max_age_hours: int = 24) -> None:
-    """Clean up old task results."""
-    global _running_tasks
-    cutoff = datetime.now() - datetime.timedelta(hours=max_age_hours)
-    expired_ids = [
-        task_id for task_id, result in _running_tasks.items()
-        if result.created_at and result.created_at < cutoff
-    ]
-    for task_id in expired_ids:
-        del _running_tasks[task_id]
-
-
-@asynccontextmanager
-async def lifespan(app: FastAPI):
-    """Application lifespan manager."""
-    # Startup
-    logger.info("Starting FlashNet backend service...")
     config = get_config()
-    logger.info(f"Configuration loaded: {config}")
+    return GCPStorageClient(config.gcp)
 
-    # Pre-load model to check availability
+
+def download_latest_h5(gcs_client, pattern: str = None) -> str:
+    """Download the latest H5 file from GCP bucket.
+
+    Args:
+        gcs_client: GCP storage client
+        pattern: Optional pattern to filter files
+
+    Returns:
+        Local path to downloaded file
+    """
+    from backend.config import get_config
+
+    config = get_config()
+    cache_dir = Path(config.cache.cache_dir)
+    cache_dir.mkdir(parents=True, exist_ok=True)
+
+    if pattern:
+        files = gcs_client.get_file_by_pattern(pattern)
+        if not files:
+            raise FileNotFoundError(f"No files found matching pattern: {pattern}")
+        source_file = files[0]
+    else:
+        source_file = gcs_client.get_latest_file()
+        if not source_file:
+            raise FileNotFoundError("No files found in source bucket")
+
+    local_path = cache_dir / source_file.name
+    gcs_client.download_file(source_file.gcs_path, str(local_path))
+
+    logger.info(f"Downloaded {source_file.name} to {local_path}")
+    return str(local_path)
+
+
+def run_inference(data_path: str) -> str:
+    """Run inference on downloaded H5 file.
+
+    Args:
+        data_path: Path to input H5 file
+
+    Returns:
+        Path to output directory
+    """
+    from backend.inference_engine import InferenceEngine
+    from backend.config import get_config
+
+    config = get_config()
+    output_dir = Path(config.cache.cache_dir) / "output"
+    output_dir.mkdir(parents=True, exist_ok=True)
+
+    engine = InferenceEngine(
+        model_path=config.model.model_path,
+        model_type=config.model.model_type,
+        patch_size=config.model.patch_size,
+        denoising_steps=config.model.denoising_steps,
+        batch_size=config.model.batch_size,
+        context_frames=config.model.context_frames,
+        use_residual=config.model.use_residual
+    )
+
+    result = engine.run_inference(
+        data_path=data_path,
+        output_dir=str(output_dir),
+        forecast_steps=config.model.forecast_steps,
+        nb_forecast=config.model.nb_forecast
+    )
+
+    if result.status.value != "completed":
+        raise RuntimeError(f"Inference failed: {result.error_message}")
+
+    logger.info(f"Inference completed. Output: {output_dir}")
+    return str(output_dir)
+
+
+def upload_results(output_dir: str, gcs_client):
+    """Upload inference results to GCP bucket.
+
+    Args:
+        output_dir: Directory containing output files
+        gcs_client: GCP storage client
+    """
+    from backend.config import get_config
+    from datetime import datetime
+
+    config = get_config()
+    output_path = Path(output_dir)
+
+    date_prefix = datetime.now().strftime("%Y-%m-%d")
+    dest_prefix = f"{config.gcp.dest_prefix}/{date_prefix}"
+
+    uploaded = []
+    for filepath in output_path.glob("*.npz"):
+        dest_gcs_path = f"{config.gcp.dest_bucket}/{dest_prefix}/{filepath.name}"
+        gcs_client.upload_file(str(filepath), dest_gcs_path)
+        uploaded.append(filepath.name)
+        logger.info(f"Uploaded {filepath.name} to {dest_gcs_path}")
+
+    return uploaded
+
+
+def process_date_pipeline(target_date: datetime) -> dict:
+    """Run the full download-inference-upload pipeline.
+
+    Args:
+        target_date: Datetime for the forecast
+
+    Returns:
+        Dictionary with pipeline results
+    """
+    start_time = datetime.now()
+    logger.info(f"Starting pipeline for {target_date}")
+
     try:
-        engine = get_inference_engine()
-        logger.info("Inference engine initialized successfully")
-    except Exception as e:
-        logger.warning(f"Failed to initialize inference engine: {e}")
+        # Setup GCP client
+        gcs_client = setup_gcp_client()
 
-    # Test GCP connection
-    try:
-        gcs_client = get_gcs_client()
-        files = gcs_client.list_files(max_results=1)
-        logger.info(f"GCP connection successful, found {len(files)} files in source bucket")
-    except Exception as e:
-        logger.warning(f"GCP connection failed: {e}")
-
-    yield
-
-    # Shutdown
-    logger.info("Shutting down FlashNet backend service...")
-    if _inference_engine:
-        _inference_engine.cleanup()
-    _executor.shutdown(wait=False)
-
-
-app = FastAPI(
-    title="FlashNet Weather Forecasting API",
-    description="Backend service for weather forecasting using rectified flow models",
-    version="1.0.0",
-    lifespan=lifespan
-)
-
-app.add_middleware(
-    CORSMiddleware,
-    allow_origins=["*"],
-    allow_credentials=True,
-    allow_methods=["*"],
-    allow_headers=["*"],
-)
-
-
-def run_inference_task(
-    task_id: str,
-    gcs_path: str,
-    forecast_steps: int,
-    nb_forecast: int,
-    output_dir: str
-) -> None:
-    """Run inference task in background."""
-    global _running_tasks
-
-    try:
-        config = get_config()
-        gcs_client = get_gcs_client()
-        engine = get_inference_engine()
-
-        # Download file from GCS
-        local_data_path = os.path.join(output_dir, "input.h5")
-        gcs_client.download_file(gcs_path, local_data_path)
+        # Download latest H5 file
+        pattern = target_date.strftime("%Y-%m-%d_%H-") + "*.h5"
+        data_path = download_latest_h5(gcs_client, pattern=pattern)
 
         # Run inference
-        result = engine.run_inference(
-            data_path=local_data_path,
-            output_dir=output_dir,
-            forecast_steps=forecast_steps,
-            nb_forecast=nb_forecast
-        )
+        output_dir = run_inference(data_path)
 
-        if result.status == InferenceStatus.COMPLETED:
-            # Upload results to GCS
-            dest_prefix = f"{config.gcp.dest_prefix}/{datetime.now().strftime('%Y-%m-%d')}"
-            for filename in Path(output_dir).glob("*.npz"):
-                dest_path = f"{config.gcp.dest_bucket}/{dest_prefix}/{filename.name}"
-                gcs_client.upload_file(str(filename), dest_path)
+        # Upload results
+        uploaded = upload_results(output_dir, gcs_client)
 
-        _running_tasks[task_id] = result
-
-    except Exception as e:
-        logger.exception(f"Task {task_id} failed")
-        _running_tasks[task_id] = InferenceResult(
-            status=InferenceStatus.FAILED,
-            error_message=str(e),
-            created_at=datetime.now(),
-            completed_at=datetime.now()
-        )
-
-
-@app.get("/", response_class=JSONResponse)
-async def root():
-    """Root endpoint."""
-    return {
-        "service": "FlashNet Weather Forecasting API",
-        "version": "1.0.0",
-        "status": "running"
-    }
-
-
-@app.get("/health", response_model=HealthResponse)
-async def health_check():
-    """Health check endpoint."""
-    config = get_config()
-    gcs_connected = False
-    model_loaded = False
-
-    try:
-        gcs_client = get_gcs_client()
-        files = gcs_client.list_files(max_results=1)
-        gcs_connected = True
-    except Exception as e:
-        logger.error(f"Health check GCP error: {e}")
-
-    try:
-        engine = get_inference_engine()
-        model_loaded = engine.model is not None
-    except Exception as e:
-        logger.error(f"Health check model error: {e}")
-
-    status = "healthy" if (gcs_connected and model_loaded) else "degraded"
-
-    return HealthResponse(
-        status=status,
-        model_loaded=model_loaded,
-        gcp_connected=gcs_connected,
-        timestamp=datetime.now()
-    )
-
-
-@app.get("/files", response_model=List[Dict[str, Any]])
-async def list_files(pattern: Optional[str] = None, limit: int = 10):
-    """List available files in source bucket."""
-    try:
-        gcs_client = get_gcs_client()
-        files = gcs_client.list_files(
-            prefix=pattern or "",
-            extension=".h5",
-            max_results=limit
-        )
-
-        return [
-            {
-                "name": f.name,
-                "bucket": f.bucket,
-                "size": f.size,
-                "updated": f.updated.isoformat(),
-                "gcs_path": f.gcs_path
-            }
-            for f in files
-        ]
-    except Exception as e:
-        logger.error(f"Error listing files: {e}")
-        raise HTTPException(status_code=500, detail=str(e))
-
-
-@app.get("/files/latest", response_model=Dict[str, Any])
-async def get_latest_file():
-    """Get the latest file in source bucket."""
-    try:
-        gcs_client = get_gcs_client()
-        latest = gcs_client.get_latest_file()
-
-        if not latest:
-            raise HTTPException(status_code=404, detail="No files found")
+        end_time = datetime.now()
+        duration = (end_time - start_time).total_seconds()
 
         return {
-            "name": latest.name,
-            "bucket": latest.bucket,
-            "size": latest.size,
-            "updated": latest.updated.isoformat(),
-            "gcs_path": latest.gcs_path
+            "status": "success",
+            "target_date": target_date.isoformat(),
+            "input_file": os.path.basename(data_path),
+            "output_files": uploaded,
+            "duration_seconds": duration,
+            "completed_at": end_time.isoformat()
         }
-    except HTTPException:
-        raise
+
     except Exception as e:
-        logger.error(f"Error getting latest file: {e}")
-        raise HTTPException(status_code=500, detail=str(e))
+        logger.exception("Pipeline failed")
+        return {
+            "status": "failed",
+            "target_date": target_date.isoformat(),
+            "error": str(e),
+            "failed_at": datetime.now().isoformat()
+        }
 
 
-@app.post("/infer", response_model=InferenceTaskResponse)
-async def submit_inference(task: InferenceTask, background_tasks: BackgroundTasks):
-    """Submit a new inference task."""
-    task_id = str(uuid.uuid4())
-    config = get_config()
+def run_cli(target_date: datetime):
+    """Run pipeline in CLI mode."""
+    result = process_date_pipeline(target_date)
 
+    if result["status"] == "success":
+        print(f"\n✓ Pipeline completed successfully!")
+        print(f"  Duration: {result['duration_seconds']:.1f}s")
+        print(f"  Output files: {len(result['output_files'])}")
+        for f in result["output_files"]:
+            print(f"    - {f}")
+    else:
+        print(f"\n✗ Pipeline failed: {result['error']}")
+        sys.exit(1)
+
+
+# =============================================================================
+# FastAPI Web Server (Simple health checks only)
+# =============================================================================
+from fastapi import FastAPI, HTTPException
+from pydantic import BaseModel
+from typing import Optional
+import uvicorn
+
+
+web_app = FastAPI(title="FlashNet Backend")
+
+
+class ProcessRequest(BaseModel):
+    date: Optional[str] = None  # Format YYYY-MM-DD HH:MM:SS
+
+
+@web_app.get("/")
+def health_check():
+    return {"status": "ok", "service": "flashnet-backend"}
+
+
+@web_app.get("/health")
+def health():
+    return {"status": "healthy"}
+
+
+@web_app.post("/pipeline/run")
+def run_pipeline(request: ProcessRequest):
+    """Trigger the pipeline via HTTP."""
     try:
-        gcs_client = get_gcs_client()
-
-        # Find source file
-        if task.file_pattern:
-            files = gcs_client.get_file_by_pattern(task.file_pattern)
-            if not files:
-                raise HTTPException(
-                    status_code=404,
-                    detail=f"No files found matching pattern: {task.file_pattern}"
-                )
-            source_file = files[0]
+        if request.date:
+            target_date = datetime.strptime(request.date, "%Y-%m-%d %H:%M:%S")
         else:
-            source_file = gcs_client.get_latest_file()
-            if not source_file:
-                raise HTTPException(
-                    status_code=404,
-                    detail="No files found in source bucket"
-                )
+            target_date = datetime.now() - timedelta(hours=4)
 
-        # Create output directory
-        output_dir = os.path.join(config.cache.cache_dir, task_id)
-        Path(output_dir).mkdir(parents=True, exist_ok=True)
+        result = process_date_pipeline(target_date)
 
-        # Submit background task
-        background_tasks.add_task(
-            run_inference_task,
-            task_id,
-            source_file.gcs_path,
-            task.forecast_steps,
-            task.nb_forecast,
-            output_dir
-        )
+        if result["status"] == "failed":
+            raise HTTPException(status_code=500, detail=result["error"])
 
-        return InferenceTaskResponse(
-            task_id=task_id,
-            status="pending",
-            message=f"Inference task submitted for {source_file.name}",
-            file_info={
-                "name": source_file.name,
-                "gcs_path": source_file.gcs_path
-            }
-        )
+        return result
 
-    except HTTPException:
-        raise
     except Exception as e:
-        logger.error(f"Error submitting task: {e}")
+        logger.exception("Pipeline HTTP endpoint failed")
         raise HTTPException(status_code=500, detail=str(e))
 
 
-@app.get("/tasks/{task_id}", response_model=TaskStatusResponse)
-async def get_task_status(task_id: str):
-    """Get the status of an inference task."""
-    if task_id not in _running_tasks:
-        raise HTTPException(status_code=404, detail="Task not found")
+# =============================================================================
+# Main Entry Point
+# =============================================================================
+def main():
+    parser = argparse.ArgumentParser(
+        description="FlashNet Weather Forecast Pipeline",
+        formatter_class=argparse.RawDescriptionHelpFormatter,
+        epilog="""
+Examples:
+  # Run pipeline for specific date
+  python main.py --mode=cli --date="2026-01-12 13:40:00"
 
-    result = _running_tasks[task_id]
+  # Run pipeline for latest available data
+  python main.py --mode=cli
 
-    return TaskStatusResponse(
-        task_id=task_id,
-        status=result.status.value,
-        message=result.error_message,
-        metrics=result.metrics,
-        output_files=result.metrics.get("output_files") if result.metrics else None,
-        created_at=result.created_at,
-        completed_at=result.completed_at
+  # Run web server (for Cloud Run with health checks)
+  python main.py --mode=web
+
+  # Run with custom model path
+  python main.py --mode=cli --model-path=/path/to/model.safetensors
+        """
     )
 
+    parser.add_argument(
+        "--mode",
+        choices=["web", "cli"],
+        default="cli",
+        help="Run mode: web (FastAPI server) or cli (single pipeline run)"
+    )
+    parser.add_argument(
+        "--date",
+        type=str,
+        help="Target date in YYYY-MM-DD HH:MM:SS format (default: auto-detect latest)"
+    )
+    parser.add_argument(
+        "--model-path",
+        type=str,
+        help="Path to model weights (default: from config)"
+    )
+    parser.add_argument(
+        "--port",
+        type=int,
+        default=8080,
+        help="Port for web server (default: 8080)"
+    )
 
-@app.get("/tasks", response_model=List[Dict[str, Any]])
-async def list_tasks(limit: int = 10):
-    """List recent tasks."""
-    tasks = list(_running_tasks.items())[-limit:]
-    return [
-        {
-            "task_id": task_id,
-            "status": result.status.value,
-            "created_at": result.created_at.isoformat() if result.created_at else None,
-            "completed_at": result.completed_at.isoformat() if result.completed_at else None
-        }
-        for task_id, result in tasks
-    ]
+    args = parser.parse_args()
 
+    if args.mode == "cli":
+        if args.date:
+            target_date = datetime.strptime(args.date, "%Y-%m-%d %H:%M:%S")
+        else:
+            target_date = datetime.now() - timedelta(hours=4)
 
-@app.get("/models/info")
-async def get_model_info():
-    """Get information about the loaded model."""
-    try:
-        engine = get_inference_engine()
-        config = get_config()
+        if args.model_path:
+            os.environ["MODEL_PATH"] = args.model_path
 
-        return {
-            "model_path": config.model.model_path,
-            "model_type": config.model.model_type,
-            "patch_size": config.model.patch_size,
-            "denoising_steps": config.model.denoising_steps,
-            "batch_size": config.model.batch_size,
-            "context_frames": config.model.context_frames,
-            "use_residual": config.model.use_residual,
-            "device": engine.device,
-            "model_loaded": engine.model is not None
-        }
-    except Exception as e:
-        logger.error(f"Error getting model info: {e}")
-        raise HTTPException(status_code=500, detail=str(e))
+        run_cli(target_date)
 
+    else:
+        # Web server mode for Cloud Run
+        port = int(os.environ.get("PORT", args.port))
+        host = os.environ.get("HOST", "0.0.0.0")
 
-def create_app() -> FastAPI:
-    """Create and configure the FastAPI application."""
-    return app
+        logger.info(f"Starting web server on {host}:{port}")
+        uvicorn.run(web_app, host=host, port=port)
 
 
 if __name__ == "__main__":
-    import uvicorn
-
-    config = get_config()
-
-    uvicorn.run(
-        "main:app",
-        host=config.server.host,
-        port=config.server.port,
-        reload=config.server.reload
-    )
+    main()

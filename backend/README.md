@@ -1,6 +1,6 @@
 # FlashNet Backend
 
-REST API backend for weather forecasting using rectified flow models.
+CLI-based weather forecast inference pipeline for Cloud Run Jobs.
 
 ## Quick Start
 
@@ -20,32 +20,65 @@ cp backend/.env.example backend/.env
 nano backend/.env
 ```
 
-### 2. Build and Run
+### 2. Run Locally (CLI Mode)
 
-**With GPU (CUDA):**
+**With GPU:**
 ```bash
-make build
-make run-detached
+# Build
+docker build -f backend/Dockerfile --target runtime-cuda -t flashnet-backend .
+
+# Run single pipeline execution
+docker run --rm --gpus all \
+  -v $(pwd)/models:/app/models:ro \
+  -e MODE=cli \
+  flashnet-backend
 ```
 
-**CPU-only:**
+**With specific date:**
 ```bash
-make build-cpu
-make run-cpu
+docker run --rm --gpus all \
+  -v $(pwd)/models:/app/models:ro \
+  -e MODE=cli \
+  flashnet-backend \
+  python3 backend/main.py --mode=cli --date="2026-01-12 13:40:00"
 ```
 
-### 3. Verify
+### 3. Run Web Server (Optional)
+
+For health checks only:
+```bash
+docker run --rm --gpus all \
+  -v $(pwd)/models:/app/models:ro \
+  -p 8080:8080 \
+  flashnet-backend \
+  python3 backend/main.py --mode=web
+```
+
+## Usage
+
+### CLI Mode (for Cloud Run Jobs)
 
 ```bash
-# Check health
-curl http://localhost:8080/health
+# Run with default date (now - 4 hours)
+python3 backend/main.py --mode=cli
 
-# Submit inference task
-curl -X POST http://localhost:8080/infer
+# Run with specific date
+python3 backend/main.py --mode=cli --date="2026-01-12 13:40:00"
 
-# Check task status
-curl http://localhost:8080/tasks/{task_id}
+# Run with custom model path
+python3 backend/main.py --mode=cli --model-path=/path/to/model.safetensors
 ```
+
+### Web Mode (for health checks)
+
+```bash
+python3 backend/main.py --mode=web
+```
+
+Endpoints:
+- `GET /` - Service info
+- `GET /health` - Health check
+- `POST /pipeline/run` - Trigger pipeline
 
 ## Configuration
 
@@ -53,17 +86,17 @@ curl http://localhost:8080/tasks/{task_id}
 
 | Variable | Default | Description |
 |----------|---------|-------------|
-| `SERVER_HOST` | `0.0.0.0` | Server bind address |
-| `SERVER_PORT` | `8080` | Server port |
+| `MODE` | `cli` | Run mode: `cli` or `web` |
 | `MODEL_PATH` | `models/latest.safetensors` | Path to model weights |
 | `MODEL_TYPE` | `jit` | Model architecture (`jit` or `unet`) |
 | `PATCH_SIZE` | `128` | Tiled inference patch size |
 | `DENOISING_STEPS` | `128` | Number of denoising steps |
 | `BATCH_SIZE` | `64` | Inference batch size |
-| `FORECAST_STEPS` | `18` | Total forecast frames to generate |
-| `NB_FORECAST` | `3` | Frames per forecast batch |
-| `GCP_SOURCE_BUCKET` | `eumetsat_mtg_preprocess` | Input H5 files bucket |
-| `GCP_DEST_BUCKET` | `inference_result` | Output results bucket |
+| `FORECAST_STEPS` | `18` | Total forecast frames |
+| `NB_FORECAST` | `3` | Frames per batch |
+| `GCP_SOURCE_BUCKET` | `eumetsat_mtg_preprocess` | Input bucket |
+| `GCP_DEST_BUCKET` | `inference_result` | Output bucket |
+| `CACHE_DIR` | `/tmp/flashnet_cache` | Temp cache directory |
 
 ### Model Files
 
@@ -74,86 +107,38 @@ ls models/
 latest.safetensors
 ```
 
-## API Endpoints
-
-### Health Check
-```
-GET /health
-```
-Returns service health status.
-
-### List Files
-```
-GET /files?pattern=*.h5&limit=10
-```
-List available H5 files in source bucket.
-
-### Get Latest File
-```
-GET /files/latest
-```
-Get the most recent H5 file.
-
-### Submit Inference
-```
-POST /infer
-{
-  "file_pattern": "2026-01-12_*.h5",  // optional
-  "forecast_steps": 18,                // optional
-  "nb_forecast": 3                     // optional
-}
-```
-Returns task ID for tracking.
-
-### Task Status
-```
-GET /tasks/{task_id}
-```
-Returns task status and results.
-
-### List Tasks
-```
-GET /tasks?limit=10
-```
-List recent tasks.
-
-### Model Info
-```
-GET /models/info
-```
-Returns loaded model configuration.
-
 ## Docker Commands
 
 | Command | Description |
 |---------|-------------|
 | `make build` | Build CUDA image |
 | `make build-cpu` | Build CPU-only image |
-| `make run-detached` | Run in background |
+| `make run-detached` | Run in background (CLI mode) |
+| `make run-web` | Run web server |
 | `make logs-follow` | Follow logs |
 | `make stop` | Stop container |
-| `make clean` | Remove container |
-| `make shell` | Open bash shell |
 
-## Production Deployment
-
-### GCP Cloud Run
+## Cloud Run Job Deployment
 
 ```bash
-# Build and push to Container Registry
-make build
-docker tag flashnet-backend:cuda gcr.io/PROJECT_ID/flashnet-backend
-docker push gcr.io/PROJECT_ID/flashnet-backend
+# Build and push
+docker build -f backend/Dockerfile --target runtime-cuda -t flashnet-backend .
+docker tag flashnet-backend gcr.io/PROJECT_ID/flashnet-repo/flashnet-backend:latest
+docker push gcr.io/PROJECT_ID/flashnet-repo/flashnet-backend:latest
 
-# Deploy
-make deploy-cloud-run
-```
+# Deploy Cloud Run Job
+gcloud run jobs deploy flashnet-backend-job \
+  --image gcr.io/PROJECT_ID/flashnet-repo/flashnet-backend:latest \
+  --region europe-west3 \
+  --cpu 4 \
+  --memory 16Gi \
+  --gpu 1 \
+  --gpu-type nvidia-tesla-t4 \
+  --task-timeout 3600 \
+  --max-retries 2
 
-### Docker Compose (Production)
-
-```bash
-# Override for production settings
-docker compose -f backend/docker-compose.yml up -d
+# Execute job
+gcloud run jobs execute flashnet-backend-job --region europe-west3
 ```
 
 ## File Locations
@@ -162,15 +147,15 @@ docker compose -f backend/docker-compose.yml up -d
 - **Pattern:** `YYYY-MM-DD_HH-MM_region.h5`
 - **Output:** `gs://inference_result/forecasts/YYYY-MM-DD/`
 
-## Development
+## Architecture
 
-```bash
-# Build with debug mode
-make build-debug
-
-# Run with hot reload
-cd backend
-python -m main
+```
+┌─────────────────┐     ┌──────────────┐     ┌─────────────────┐
+│  GCP Storage    │────▶│  CLI Pipeline│────▶│  GCP Storage    │
+│  (Input H5)     │     │  Download    │     │  (Output NPZ)   │
+└─────────────────┘     │  Inference   │     └─────────────────┘
+                        │  Upload      │
+                        └──────────────┘
 ```
 
 ## Troubleshooting
@@ -200,23 +185,4 @@ FORECAST_STEPS=9
 export GOOGLE_APPLICATION_CREDENTIALS=/path/to/service-account.json
 ```
 
-## Architecture
-
-```
-┌─────────────────┐     ┌──────────────┐     ┌─────────────────┐
-│  GCP Storage    │────▶│  Backend     │────▶│  GCP Storage    │
-│  (Input H5)     │     │  API Server  │     │  (Output NPZ)   │
-└─────────────────┘     └──────────────┘     └─────────────────┘
-                              │
-                              ▼
-                       ┌──────────────┐
-                       │   Inference  │
-                       │    Engine    │
-                       └──────────────┘
-                              │
-                              ▼
-                       ┌──────────────┐
-                       │   Tiled      │
-                       │  Diffusion   │
-                       └──────────────┘
-```
+Or use GitHub secret `GCP_CREDENTIALS` for CI/CD.

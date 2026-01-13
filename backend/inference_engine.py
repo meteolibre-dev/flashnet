@@ -108,8 +108,53 @@ class InferenceEngine:
 
         self.params = config["model_v15_mtg_world_lightning_shortcut"]
 
+    def _download_model_from_gcs(self, gcs_path: str, local_path: str) -> None:
+        """Download model from Google Cloud Storage.
+
+        Args:
+            gcs_path: GCS path (e.g., gs://bucket/path/model.safetensors)
+            local_path: Local path to save the model
+        """
+        from google.cloud import storage
+        from google.oauth2 import service_account
+        import logging
+
+        logger.info(f"Downloading model from {gcs_path} to {local_path}")
+
+        # Parse GCS path
+        if not gcs_path.startswith("gs://"):
+            raise ValueError(f"Invalid GCS path: {gcs_path}")
+
+        path_parts = gcs_path[5:].split("/")
+        bucket_name = path_parts[0]
+        blob_name = "/".join(path_parts[1:])
+
+        # Get credentials
+        credentials = None
+        if os.environ.get("GOOGLE_APPLICATION_CREDENTIALS"):
+            credentials = service_account.Credentials.from_service_account_file(
+                os.environ.get("GOOGLE_APPLICATION_CREDENTIALS")
+            )
+
+        # Download from GCS
+        client = storage.Client(credentials=credentials)
+        bucket = client.bucket(bucket_name)
+        blob = bucket.blob(blob_name)
+
+        # Ensure parent directory exists
+        Path(local_path).parent.mkdir(parents=True, exist_ok=True)
+
+        blob.download_to_filename(local_path)
+        logger.info(f"Model downloaded successfully to {local_path}")
+
     def _load_model(self) -> None:
         """Load the model weights."""
+        model_gcs_path = os.environ.get("MODEL_GCS_PATH", "")
+
+        # Check if model needs to be downloaded from GCS
+        if model_gcs_path and not os.path.exists(self.model_path):
+            self._download_model_from_gcs(model_gcs_path, self.model_path)
+
         logger.info(f"Loading model from {self.model_path}")
 
         torch.set_float32_matmul_precision('medium')

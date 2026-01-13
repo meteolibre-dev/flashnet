@@ -10,16 +10,17 @@ services:
     ports:
       - "8080:8080"
     volumes:
-      - ./models:/app/models:ro
       - flashnet-cache:/tmp/flashnet_cache
       - ./backend/.env:/app/.env:ro
     environment:
       - CUDA_VISIBLE_DEVICES=0
-      - MODEL_PATH=/app/models/latest.safetensors
+      - MODE=cli
       - SERVER_HOST=0.0.0.0
       - SERVER_PORT=8080
       - LOG_LEVEL=INFO
       - CACHE_DIR=/tmp/flashnet_cache
+      - MODEL_PATH=/tmp/flashnet_cache/model.safetensors
+      - MODEL_GCS_PATH=gs://eumetsat_mtg_preprocess/assets/model_v15_mtg_world_lightning_shortcut_jit_e160.safetensors
       - GCP_SOURCE_BUCKET=eumetsat_mtg_preprocess
       - GCP_SOURCE_PREFIX=inference_h5
       - GCP_DEST_BUCKET=inference_result
@@ -32,12 +33,53 @@ services:
               count: 1
               capabilities: [gpu]
     restart: unless-stopped
+    entrypoint: ["python3", "backend/main.py", "--mode=cli"]
     healthcheck:
       test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://localhost:8080/health')"]
-      interval: 30s
-      timeout: 10s
+      interval: 60s
+      timeout: 30s
       retries: 3
-      start_period: 60s
+      start_period: 120s
+
+  flashnet-backend-web:
+    build:
+      context: .
+      dockerfile: backend/Dockerfile
+      target: runtime-cuda
+    container_name: flashnet-backend-web
+    ports:
+      - "8081:8080"
+    volumes:
+      - flashnet-cache:/tmp/flashnet_cache
+      - ./backend/.env:/app/.env:ro
+    environment:
+      - CUDA_VISIBLE_DEVICES=0
+      - MODE=web
+      - SERVER_HOST=0.0.0.0
+      - SERVER_PORT=8080
+      - LOG_LEVEL=INFO
+      - CACHE_DIR=/tmp/flashnet_cache
+      - MODEL_PATH=/tmp/flashnet_cache/model.safetensors
+      - MODEL_GCS_PATH=gs://eumetsat_mtg_preprocess/assets/model_v15_mtg_world_lightning_shortcut_jit_e160.safetensors
+      - GCP_SOURCE_BUCKET=eumetsat_mtg_preprocess
+      - GCP_SOURCE_PREFIX=inference_h5
+      - GCP_DEST_BUCKET=inference_result
+      - GCP_DEST_PREFIX=forecasts
+    deploy:
+      resources:
+        reservations:
+          devices:
+            - driver: nvidia
+              count: 1
+              capabilities: [gpu]
+    restart: unless-stopped
+    entrypoint: ["python3", "backend/main.py", "--mode=web"]
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://localhost:8080/health')"]
+      interval: 60s
+      timeout: 30s
+      retries: 3
+      start_period: 120s
 
   flashnet-backend-cpu:
     build:
@@ -46,28 +88,30 @@ services:
       target: runtime-cpu
     container_name: flashnet-backend-cpu
     ports:
-      - "8081:8080"
+      - "8082:8080"
     volumes:
-      - ./models:/app/models:ro
       - flashnet-cache:/tmp/flashnet_cache
       - ./backend/.env:/app/.env:ro
     environment:
-      - MODEL_PATH=/app/models/latest.safetensors
+      - MODE=cli
       - SERVER_HOST=0.0.0.0
       - SERVER_PORT=8080
       - LOG_LEVEL=INFO
       - CACHE_DIR=/tmp/flashnet_cache
+      - MODEL_PATH=/tmp/flashnet_cache/model.safetensors
+      - MODEL_GCS_PATH=gs://eumetsat_mtg_preprocess/assets/model_v15_mtg_world_lightning_shortcut_jit_e160.safetensors
       - GCP_SOURCE_BUCKET=eumetsat_mtg_preprocess
       - GCP_SOURCE_PREFIX=inference_h5
       - GCP_DEST_BUCKET=inference_result
       - GCP_DEST_PREFIX=forecasts
     restart: unless-stopped
+    entrypoint: ["python3", "backend/main.py", "--mode=cli"]
     healthcheck:
       test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://localhost:8080/health')"]
-      interval: 30s
-      timeout: 10s
+      interval: 60s
+      timeout: 30s
       retries: 3
-      start_period: 60s
+      start_period: 120s
 
 volumes:
   flashnet-cache:
