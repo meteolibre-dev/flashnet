@@ -129,10 +129,10 @@ def upload_results(output_dir: str, gcs_client):
 
     uploaded = []
     for filepath in output_path.glob("*.npz"):
-        dest_gcs_path = f"{config.gcp.dest_bucket}/{dest_prefix}/{filepath.name}"
-        gcs_client.upload_file(str(filepath), dest_gcs_path)
+        dest_blob_name = f"{dest_prefix}/{filepath.name}"
+        gcs_client.upload_file(str(filepath), dest_blob_name)
         uploaded.append(filepath.name)
-        logger.info(f"Uploaded {filepath.name} to {dest_gcs_path}")
+        logger.info(f"Uploaded {filepath.name} to {config.gcp.dest_bucket}/{dest_blob_name}")
 
     return uploaded
 

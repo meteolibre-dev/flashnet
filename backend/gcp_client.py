@@ -97,10 +97,10 @@ class GCPStorageClient:
 
         # Parse the GCS path
         path_parts = source_gcs_path.split("/")
-        if len(path_parts) < 2:
-            raise ValueError(f"Invalid GCS path: {source_gcs_path}")
-
-        blob_name = "/".join(path_parts[1:]) if path_parts[0] == bucket_name else source_gcs_path
+        if path_parts[0] == bucket_name:
+            blob_name = "/".join(path_parts[1:])
+        else:
+            blob_name = source_gcs_path
 
         # Ensure destination directory exists
         Path(dest_path).parent.mkdir(parents=True, exist_ok=True)
@@ -141,10 +141,10 @@ class GCPStorageClient:
 
         # Parse the GCS path
         path_parts = dest_gcs_path.split("/")
-        if len(path_parts) < 2:
-            raise ValueError(f"Invalid GCS path: {dest_gcs_path}")
-
-        blob_name = "/".join(path_parts[1:]) if path_parts[0] == bucket_name else dest_gcs_path
+        if path_parts[0] == bucket_name:
+            blob_name = "/".join(path_parts[1:])
+        else:
+            blob_name = dest_gcs_path
 
         blob = bucket.blob(blob_name)
 
@@ -278,7 +278,10 @@ class GCPStorageClient:
 
         try:
             path_parts = gcs_path.split("/")
-            blob_name = "/".join(path_parts[1:]) if path_parts[0] == bucket_name else gcs_path
+            if path_parts[0] == bucket_name:
+                blob_name = "/".join(path_parts[1:])
+            else:
+                blob_name = gcs_path
 
             bucket = self._get_bucket(bucket_name)
             blob = bucket.blob(blob_name)
@@ -306,13 +309,16 @@ class GCPStorageClient:
 
         try:
             path_parts = gcs_path.split("/")
-            blob_name = "/".join(path_parts[1:]) if path_parts[0] == bucket_name else gcs_path
+            if path_parts[0] == bucket_name:
+                blob_name = "/".join(path_parts[1:])
+            else:
+                blob_name = gcs_path
 
             bucket = self._get_bucket(bucket_name)
             blob = bucket.blob(blob_name)
 
             blob.delete()
-            logger.info(f"Deleted gs://{gcs_path}")
+            logger.info(f"Deleted gs://{bucket_name}/{blob_name}")
 
             return True
         except Exception as e:
