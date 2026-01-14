@@ -198,8 +198,11 @@ class InferenceEngine:
         initial_context: torch.Tensor,
         forecast_steps: int = 18,
         nb_forecast: int = 3,
-        date: Optional[datetime] = None
-    ) -> torch.Tensor:
+        date: Optional[datetime] = None,
+        output_dir: Optional[str] = None,
+        c_sat: int = 16,
+        c_lightning: int = 1,
+    ) -> tuple[torch.Tensor, torch.Tensor]:
         """Run tiled inference for weather forecasting.
 
         Args:
@@ -207,9 +210,12 @@ class InferenceEngine:
             forecast_steps: Number of forecast steps to generate
             nb_forecast: Number of frames to forecast per model call
             date: Date for the first forecast step
+            output_dir: Directory to save forecast files
+            c_sat: Number of satellite channels
+            c_lightning: Number of lightning channels
 
         Returns:
-            Generated forecast tensor.
+            List of saved output file paths.
         """
         if self.model is None:
             raise RuntimeError("Model not loaded")
@@ -257,7 +263,8 @@ class InferenceEngine:
         c_lightning = getattr(initial_context, 'c_lightning', 1)
 
         d_const = 1.0 / self.denoising_steps
-        all_forecasts = []
+        all_sat_forecasts = []
+        all_lightning_forecasts = []
 
         current_step = 0
         current_high_res_context = initial_context
@@ -273,10 +280,16 @@ class InferenceEngine:
 
             logger.info(f"Generating forecast step {current_step + 1}/{forecast_steps}")
 
-            aggregated_x_pred = torch.zeros(1, C, this_nb, H_big, W_big, device=self.device)
-            weights_sum = torch.zeros(1, 1, this_nb, H_big, W_big, device=self.device)
-
             for i in tqdm(range(self.denoising_steps), desc="Denoising"):
+                torch.cuda.empty_cache()
+                # Use bfloat16 for accumulation to save memory
+                aggregated_x_pred = torch.zeros(
+                    1, C, this_nb, H_big, W_big, device=self.device, dtype=torch.bfloat16
+                )
+                weights_sum = torch.zeros(
+                    1, 1, this_nb, H_big, W_big, device=self.device, dtype=torch.bfloat16
+                )
+
                 t_val = 1.0 - i * d_const
                 t_batch_val = torch.full((1,), t_val, device=self.device)
                 d_batch_val = torch.full((1,), d_const, device=self.device)
@@ -343,34 +356,57 @@ class InferenceEngine:
                     model_input_sat = model_input[:, :c_sat]
                     model_input_lightning = model_input[:, c_sat : (c_sat + c_lightning)]
 
-                    sat_pred_batch, lightning_pred_batch = self.model(
-                        model_input_sat.float(),
-                        model_input_lightning.float(),
-                        torch.cat(context_global_batch, dim=0).float(),
-                    )
+                    with torch.autocast("cuda", dtype=torch.bfloat16):
+                        sat_pred_batch, lightning_pred_batch = self.model(
+                            model_input_sat.float(),
+                            model_input_lightning.float(),
+                            torch.cat(context_global_batch, dim=0).float(),
+                        )
+
+                    del model_input, model_input_sat, model_input_lightning, context_global_batch, patch_x_t_batch, patch_context_batch
 
                     x_pred_batch = torch.cat([sat_pred_batch, lightning_pred_batch], dim=1)[
                         :, :, self.context_frames:, :, :
-                    ]
+                    ].to(torch.bfloat16)
+                    del sat_pred_batch, lightning_pred_batch
+
+                    # Use bfloat16 for patch weights
+                    pw = patch_weights.to(torch.bfloat16)
 
                     for j, (x_start, y_start) in enumerate(coords_batch):
                         aggregated_x_pred[
                             ...,
                             y_start : y_start + self.patch_size,
                             x_start : x_start + self.patch_size,
-                        ] += x_pred_batch[j : j + 1] * patch_weights
+                        ] += x_pred_batch[j : j + 1] * pw
 
                         weights_sum[
                             ...,
                             y_start : y_start + self.patch_size,
                             x_start : x_start + self.patch_size,
-                        ] += patch_weights
+                        ] += pw
+                    del x_pred_batch, pw
 
                 weights_sum[weights_sum == 0] = 1.0
-                averaged_x_pred = aggregated_x_pred / weights_sum
-                s_theta = (x_t_full_res - averaged_x_pred) / t_val
-                x_t_full_res = x_t_full_res - s_theta * d_const
-                x_t_full_res = x_t_full_res.clamp(-7, 7)
+                # In-place average in bfloat16 to save memory
+                aggregated_x_pred.div_(weights_sum)
+                
+                # Convert back to float32 for the update step
+                # We do it this way to ensure high precision for the Euler step
+                averaged_x_pred = aggregated_x_pred.float()
+                del aggregated_x_pred, weights_sum
+
+                # s_theta = (x_t - averaged_x_pred) / t
+                # In-place update averaged_x_pred to become s_theta
+                averaged_x_pred.mul_(-1.0).add_(x_t_full_res).div_(t_val)
+                
+                # x_t = x_t - s_theta * dt
+                x_t_full_res.sub_(averaged_x_pred, alpha=d_const)
+                x_t_full_res.clamp_(-7, 7)
+                
+                del averaged_x_pred
+
+            torch.cuda.empty_cache()
 
             last_context_frame = current_high_res_context[:, :, -1:, :, :]
             if self.use_residual:
@@ -380,25 +416,34 @@ class InferenceEngine:
             expanded_last = last_context_frame.expand(-1, -1, this_nb, -1, -1)
             x_t_full_res = torch.where(mask, expanded_last, x_t_full_res)
 
-            all_forecasts.append(x_t_full_res.cpu())
+            sat_frame = x_t_full_res[:, :c_sat, :, :, :]
+            lightning_frame = x_t_full_res[:, c_sat:, :, :, :]
+            sat_denorm, lightning_denorm = denormalize(sat_frame, lightning_frame, self.device)
+            all_sat_forecasts.append(sat_denorm[:, [0, 11], :, :].cpu())
+            all_lightning_forecasts.append(lightning_denorm.cpu())
+            del sat_denorm, lightning_denorm
 
             # Update context for next autoregressive step
             T_ctx = self.context_frames
             if this_nb >= T_ctx:
-                current_high_res_context = x_t_full_res[:, :, -T_ctx:, :, :].to(self.device)
+                new_context = x_t_full_res[:, :, -T_ctx:, :, :].clone()
             else:
                 tail = current_high_res_context[:, :, this_nb:, :, :]
-                current_high_res_context = torch.cat(
+                new_context = torch.cat(
                     [tail, x_t_full_res[:, :, :this_nb, :, :]], dim=2
                 ).to(self.device)
+            del current_high_res_context
+            torch.cuda.empty_cache()
+            current_high_res_context = new_context
 
+            del x_t_full_res
+            torch.cuda.empty_cache()
             x_t_full_res = torch.randn(1, C, nb_forecast, H_big, W_big, device=self.device)
             current_step += this_nb
 
-        # Concatenate all forecasts
-        final_forecast = torch.cat(all_forecasts, dim=2)
-
-        return final_forecast
+        sat_forecast = torch.cat(all_sat_forecasts, dim=2)
+        lightning_forecast = torch.cat(all_lightning_forecasts, dim=2)
+        return sat_forecast, lightning_forecast
 
     def run_inference(
         self,
@@ -484,23 +529,18 @@ class InferenceEngine:
             current_high_res_context.c_lightning = c_lightning
 
             # Run inference
-            generated_forecast = self.tiled_inference(
+            sat_forecast, lightning_forecast = self.tiled_inference(
                 initial_context=current_high_res_context,
                 forecast_steps=forecast_steps,
                 nb_forecast=nb_forecast,
-                date=initial_date
+                date=initial_date,
             )
 
             # Save results
-            generated_norm = generated_forecast.to(self.device)
-            sat_generated = generated_norm[:, :c_sat]
-            lightning_generated = generated_norm[:, c_sat:]
-            sat_denorm, lightning_denorm = denormalize(sat_generated, lightning_generated, self.device)
-
             output_files = []
-            for k in range(generated_forecast.shape[2]):
-                sat_frame = sat_denorm[:, :, k, :, :]
-                lightning_frame = lightning_denorm[:, :, k, :, :]
+            for k in range(sat_forecast.shape[2]):
+                sat_frame = sat_forecast[:, :, k, :, :]
+                lightning_frame = lightning_forecast[:, :, k, :, :]
                 pred_date = initial_date + timedelta(minutes=10 * (k + 1))
                 filename = f"forecast_{pred_date.strftime('%Y%m%d%H%M')}.npz"
                 output_filepath = os.path.join(output_dir, filename)
@@ -518,7 +558,6 @@ class InferenceEngine:
             result.output_path = output_dir
             result.completed_at = datetime.now()
             result.metrics = {
-                "num_frames": generated_forecast.shape[2],
                 "output_files": len(output_files),
                 "duration_seconds": (result.completed_at - start_time).total_seconds()
             }
