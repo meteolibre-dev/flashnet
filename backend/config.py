@@ -7,6 +7,11 @@ from pathlib import Path
 from typing import Optional
 from pydantic import BaseModel
 from datetime import timedelta
+from dotenv import load_dotenv
+
+_env_path = Path(__file__).parent / ".env"
+if _env_path.exists():
+    load_dotenv(_env_path)
 
 
 class GCPConfig(BaseModel):
