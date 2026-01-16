@@ -128,7 +128,7 @@ def upload_results(output_dir: str, gcs_client):
     dest_prefix = f"{config.gcp.dest_prefix}/{date_prefix}"
 
     uploaded = []
-    for filepath in output_path.glob("*.npz"):
+    for filepath in output_path.glob("*.png"):
         dest_blob_name = f"{dest_prefix}/{filepath.name}"
         gcs_client.upload_file(str(filepath), dest_blob_name)
         uploaded.append(filepath.name)

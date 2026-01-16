@@ -17,6 +17,7 @@ import h5py
 import pyproj
 from suncalc import get_position
 from tqdm.auto import tqdm
+from PIL import Image
 
 # Add project root to sys.path
 project_root = os.path.abspath(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
@@ -536,23 +537,29 @@ class InferenceEngine:
                 date=initial_date,
             )
 
-            # Save results
+            # Save results as PNG files
             output_files = []
             for k in range(sat_forecast.shape[2]):
                 sat_frame = sat_forecast[:, :, k, :, :]
                 lightning_frame = lightning_forecast[:, :, k, :, :]
                 pred_date = initial_date + timedelta(minutes=10 * (k + 1))
-                filename = f"forecast_{pred_date.strftime('%Y%m%d%H%M')}.npz"
-                output_filepath = os.path.join(output_dir, filename)
+                base_filename = f"forecast_{pred_date.strftime('%Y%m%d%H%M')}"
 
-                np.savez_compressed(
-                    output_filepath,
-                    sat_forecast=sat_frame.squeeze(0).cpu().numpy(),
-                    lightning_forecast=lightning_frame.squeeze(0).cpu().numpy(),
-                )
+                sat_np = sat_frame.squeeze(0).cpu().numpy()
+                lightning_np = lightning_frame.squeeze(0).cpu().numpy()
 
-                output_files.append(output_filepath)
-                logger.info(f"Saved forecast to {output_filepath}")
+                sat_image = Image.fromarray(sat_np, mode='F')
+                lightning_image = Image.fromarray(lightning_np, mode='F')
+
+                sat_path = os.path.join(output_dir, f"{base_filename}_sat.png")
+                lightning_path = os.path.join(output_dir, f"{base_filename}_lightning.png")
+
+                sat_image.save(sat_path)
+                lightning_image.save(lightning_path)
+
+                output_files.append(sat_path)
+                output_files.append(lightning_path)
+                logger.info(f"Saved forecast to {sat_path} and {lightning_path}")
 
             result.status = InferenceStatus.COMPLETED
             result.output_path = output_dir
