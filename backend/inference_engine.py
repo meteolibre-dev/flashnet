@@ -537,7 +537,7 @@ class InferenceEngine:
                 date=initial_date,
             )
 
-            # Save results as PNG files
+            # Save results as TIFF files
             output_files = []
             for k in range(sat_forecast.shape[2]):
                 sat_frame = sat_forecast[:, :, k, :, :]
@@ -548,18 +548,23 @@ class InferenceEngine:
                 sat_np = sat_frame.squeeze(0).cpu().numpy()
                 lightning_np = lightning_frame.squeeze(0).cpu().numpy()
 
-                sat_image = Image.fromarray(sat_np, mode='F')
-                lightning_image = Image.fromarray(lightning_np, mode='F')
+                # Replace -4 with NaN for transparency/no-data
+                sat_np[sat_np <= -4] = np.nan
+                lightning_np[lightning_np <= -4] = np.nan
 
-                sat_path = os.path.join(output_dir, f"{base_filename}_sat.png")
-                lightning_path = os.path.join(output_dir, f"{base_filename}_lightning.png")
+                for ch in range(sat_np.shape[0]):
+                    ch_image = Image.fromarray(sat_np[ch], mode='F')
+                    ch_path = os.path.join(output_dir, f"{base_filename}_sat_ch{ch}.tiff")
+                    ch_image.save(ch_path, format="TIFF")
+                    output_files.append(ch_path)
 
-                sat_image.save(sat_path)
-                lightning_image.save(lightning_path)
-
-                output_files.append(sat_path)
+                # lightning_np has shape (1, H, W), we need (H, W)
+                lightning_image = Image.fromarray(lightning_np[0], mode='F')
+                lightning_path = os.path.join(output_dir, f"{base_filename}_lightning.tiff")
+                lightning_image.save(lightning_path, format="TIFF")
                 output_files.append(lightning_path)
-                logger.info(f"Saved forecast to {sat_path} and {lightning_path}")
+
+                logger.info(f"Saved forecast to {base_filename}_*.tiff")
 
             result.status = InferenceStatus.COMPLETED
             result.output_path = output_dir
