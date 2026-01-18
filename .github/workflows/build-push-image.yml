@@ -12,7 +12,7 @@ on:
 
 env:
   PROJECT_ID: meteoforecast
-  GAR_LOCATION: europe-west3
+  GAR_LOCATION: europe-west1
   SERVICE: flashnet-backend
   REPOSITORY: flashnet-repo
   IMAGE_NAME: flashnet-backend
