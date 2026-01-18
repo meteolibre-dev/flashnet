@@ -35,7 +35,7 @@ class ModelConfig(BaseModel):
     forecast_steps: int = 18
     nb_forecast: int = 3
     context_frames: int = 4
-    use_residual: bool = True
+    use_residual: bool = False
     parametrization: str = "standard"
     interpolation: str = "linear"
 
@@ -92,7 +92,7 @@ class Config(BaseModel):
                 forecast_steps=int(os.getenv("FORECAST_STEPS", 18)),
                 nb_forecast=int(os.getenv("NB_FORECAST", 3)),
                 context_frames=int(os.getenv("CONTEXT_FRAMES", 4)),
-                use_residual=os.getenv("USE_RESIDUAL", "False").lower() == "false",
+                use_residual=os.getenv("USE_RESIDUAL", "False").lower() == "true",
             ),
             server=ServerConfig(
                 host=os.getenv("SERVER_HOST", "0.0.0.0"),
