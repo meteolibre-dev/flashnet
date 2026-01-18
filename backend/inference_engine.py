@@ -558,6 +558,7 @@ class InferenceEngine:
                     output_files.append(ch_path)
 
                 # lightning_np has shape (1, H, W), we need (H, W)
+                lightning_np[lightning_np < 0.1] = 0
                 lightning_image = Image.fromarray(lightning_np[0], mode='F')
                 lightning_path = os.path.join(output_dir, f"{base_filename}_lightning.tiff")
                 lightning_image.save(lightning_path, format="TIFF", compression="tiff_adobe_deflate")
