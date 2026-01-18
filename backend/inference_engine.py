@@ -65,7 +65,7 @@ class InferenceEngine:
         denoising_steps: int = 128,
         batch_size: int = 64,
         context_frames: int = 4,
-        use_residual: bool = True,
+        use_residual: bool = False,
         device: Optional[str] = None
     ):
         """Initialize the inference engine.
