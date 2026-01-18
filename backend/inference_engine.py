@@ -549,7 +549,7 @@ class InferenceEngine:
                 lightning_np = lightning_frame.squeeze(0).cpu().numpy().astype(np.float32)
 
                 # Replace -4 with NaN for transparency/no-data
-                sat_np[sat_np == -4] = np.nan
+                sat_np[sat_np <= CLIP_MIN] = np.nan
 
                 for ch in range(sat_np.shape[0]):
                     ch_image = Image.fromarray(sat_np[ch], mode='F')
