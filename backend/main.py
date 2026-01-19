@@ -312,7 +312,7 @@ Examples:
         host = os.environ.get("HOST", "0.0.0.0")
 
         logger.info(f"Starting web server on {host}:{port}")
-        uvicorn.run(web_app, host=host, port=port)
+        uvicorn.run(app, host=host, port=port)
 
 
 if __name__ == "__main__":

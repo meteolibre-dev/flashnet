@@ -15,9 +15,9 @@ import numpy as np
 import torch
 import h5py
 import pyproj
+import rasterio
 from suncalc import get_position
 from tqdm.auto import tqdm
-from PIL import Image
 
 # Add project root to sys.path
 project_root = os.path.abspath(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
@@ -551,17 +551,46 @@ class InferenceEngine:
                 # Replace -4 with NaN for transparency/no-data
                 sat_np[sat_np <= CLIP_MIN] = np.nan
 
+                # Define geospatial metadata
+                # Europe region: lon_min=-10.0, lat_max=65.0, resolution=0.012
+                transform = rasterio.transform.from_origin(-10.0, 65.0, 0.012, 0.012)
+                crs = "EPSG:4326"
+
                 for ch in range(sat_np.shape[0]):
-                    ch_image = Image.fromarray(sat_np[ch], mode='F')
                     ch_path = os.path.join(output_dir, f"{base_filename}_sat_ch{ch}.tiff")
-                    ch_image.save(ch_path, format="TIFF", compression="tiff_adobe_deflate")
+                    with rasterio.open(
+                        ch_path,
+                        'w',
+                        driver='GTiff',
+                        height=sat_np[ch].shape[0],
+                        width=sat_np[ch].shape[1],
+                        count=1,
+                        dtype=sat_np[ch].dtype,
+                        crs=crs,
+                        transform=transform,
+                        nodata=np.nan,
+                        compress='deflate'
+                    ) as dst:
+                        dst.write(sat_np[ch], 1)
                     output_files.append(ch_path)
 
                 # lightning_np has shape (1, H, W), we need (H, W)
                 lightning_np[lightning_np < 0.1] = 0
-                lightning_image = Image.fromarray(lightning_np[0], mode='F')
                 lightning_path = os.path.join(output_dir, f"{base_filename}_lightning.tiff")
-                lightning_image.save(lightning_path, format="TIFF", compression="tiff_adobe_deflate")
+                with rasterio.open(
+                    lightning_path,
+                    'w',
+                    driver='GTiff',
+                    height=lightning_np[0].shape[0],
+                    width=lightning_np[0].shape[1],
+                    count=1,
+                    dtype=lightning_np[0].dtype,
+                    crs=crs,
+                    transform=transform,
+                    nodata=0,
+                    compress='deflate'
+                ) as dst:
+                    dst.write(lightning_np[0], 1)
                 output_files.append(lightning_path)
 
                 logger.info(f"Saved forecast to {base_filename}_*.tiff")
