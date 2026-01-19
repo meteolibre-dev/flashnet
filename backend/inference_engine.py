@@ -539,6 +539,12 @@ class InferenceEngine:
 
             # Save results as TIFF files
             output_files = []
+            crop_start = 450
+            crop_end = 2600
+            crop_range = slice(crop_start, crop_end)
+            # Adjust the geospatial transform: shift lat_max by (crop_start * resolution)
+            lat_max_shifted = 65.0 - (crop_start * 0.012)
+
             for k in range(sat_forecast.shape[2]):
                 sat_frame = sat_forecast[:, :, k, :, :]
                 lightning_frame = lightning_forecast[:, :, k, :, :]
@@ -552,8 +558,8 @@ class InferenceEngine:
                 sat_np[sat_np <= CLIP_MIN] = np.nan
 
                 # Define geospatial metadata
-                # Europe region: lon_min=-10.0, lat_max=65.0, resolution=0.012
-                transform = rasterio.transform.from_origin(-10.0, 65.0, 0.012, 0.012)
+                # Europe region: lon_min=-10.0, lat_max shifted for crop, resolution=0.012
+                transform = rasterio.transform.from_origin(-10.0, lat_max_shifted, 0.012, 0.012)
                 crs = "EPSG:4326"
 
                 for ch in range(sat_np.shape[0]):
@@ -562,7 +568,7 @@ class InferenceEngine:
                         ch_path,
                         'w',
                         driver='GTiff',
-                        height=sat_np[ch].shape[0],
+                        height=sat_np[ch, crop_range].shape[0],
                         width=sat_np[ch].shape[1],
                         count=1,
                         dtype=sat_np[ch].dtype,
@@ -571,7 +577,7 @@ class InferenceEngine:
                         nodata=np.nan,
                         compress='deflate'
                     ) as dst:
-                        dst.write(sat_np[ch], 1)
+                        dst.write(sat_np[ch, crop_range], 1)
                     output_files.append(ch_path)
 
                 # lightning_np has shape (1, H, W), we need (H, W)
@@ -581,7 +587,7 @@ class InferenceEngine:
                     lightning_path,
                     'w',
                     driver='GTiff',
-                    height=lightning_np[0].shape[0],
+                    height=lightning_np[0, crop_range].shape[0],
                     width=lightning_np[0].shape[1],
                     count=1,
                     dtype=lightning_np[0].dtype,
@@ -590,7 +596,7 @@ class InferenceEngine:
                     nodata=0,
                     compress='deflate'
                 ) as dst:
-                    dst.write(lightning_np[0], 1)
+                    dst.write(lightning_np[0, crop_range], 1)
                 output_files.append(lightning_path)
 
                 logger.info(f"Saved forecast to {base_filename}_*.tiff")
