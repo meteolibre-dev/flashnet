@@ -13,6 +13,7 @@ from enum import Enum
 
 import numpy as np
 import torch
+import torch.nn.functional as F
 import h5py
 import pyproj
 import rasterio
@@ -183,6 +184,39 @@ class InferenceEngine:
     def _extract_patch(self, image: torch.Tensor, x: int, y: int, patch_size: int) -> torch.Tensor:
         """Extract a patch from an image."""
         return image[..., y : y + patch_size, x : x + patch_size]
+
+    def _fill_bad_pixels(self, x: torch.Tensor, threshold: float) -> torch.Tensor:
+        """Fill pixels <= threshold with average of valid neighbors."""
+        # x: (B, C, H, W)
+        with torch.no_grad():
+            mask = x <= threshold
+            if not mask.any():
+                return x
+            
+            # Kernel for sum of neighbors (exclude center)
+            # 3x3 kernel with center 0, others 1
+            channels = x.shape[1]
+            kernel = torch.ones(channels, 1, 3, 3, device=x.device, dtype=x.dtype)
+            kernel[..., 1, 1] = 0
+            
+            # Valid pixels
+            valid_x = torch.where(mask, torch.tensor(0.0, device=x.device, dtype=x.dtype), x)
+            valid_mask = (~mask).to(x.dtype)
+            
+            # Sum of valid neighbors
+            sum_neighbors = F.conv2d(valid_x, kernel, padding=1, groups=channels)
+            
+            # Count of valid neighbors
+            count_neighbors = F.conv2d(valid_mask, kernel, padding=1, groups=channels)
+            
+            # Avoid division by zero
+            avg_neighbors = sum_neighbors / (count_neighbors + 1e-6)
+            
+            # Replace bad pixels where we have valid neighbors
+            fill_mask = mask & (count_neighbors > 0)
+            x = torch.where(fill_mask, avg_neighbors, x)
+            
+            return x
 
     def _get_gaussian_weights(self, patch_size: int, sigma_scale: float = 0.3) -> torch.Tensor:
         """Generate a 2D Gaussian weight mask."""
@@ -547,6 +581,9 @@ class InferenceEngine:
 
             for k in range(sat_forecast.shape[2]):
                 sat_frame = sat_forecast[:, :, k, :, :]
+                # Fill bad pixels (<= CLIP_MIN) with neighbor average
+                sat_frame = self._fill_bad_pixels(sat_frame, CLIP_MIN)
+                
                 lightning_frame = lightning_forecast[:, :, k, :, :]
                 pred_date = initial_date + timedelta(minutes=10 * (k + 1))
                 base_filename = f"forecast_{pred_date.strftime('%Y%m%d%H%M')}"
