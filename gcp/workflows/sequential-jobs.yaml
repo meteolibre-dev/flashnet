@@ -1,0 +1,52 @@
+main:
+  params: [args]
+  steps:
+    - init:
+        assign:
+          - project_id: "meteoforecast"
+          - location: "europe-west1"
+          - job1_name: "meteo-backend-job"
+          - job2_name: "flashnet-backend-gpu-job"
+
+    # --- Step 1: Start Meteo Job ---
+    - start_job1:
+        call: googleapis.run.v1.namespaces.jobs.run
+        args:
+          name: ${"namespaces/" + project_id + "/jobs/" + job1_name}
+          location: ${location}
+        result: job1_execution
+
+    # --- Step 2: Custom Wait Loop for Job 1 ---
+    # Cloud Run Jobs are async, so we must poll for completion
+    - wait_for_job1:
+        call: sys.sleep
+        args:
+          seconds: 30
+    - check_job1_status:
+        call: googleapis.run.v1.namespaces.jobs.executions.get
+        args:
+          name: ${job1_execution.metadata.name}
+        result: job1_status
+    - check_if_done:
+        switch:
+          # If running/pending (status is Unknown condition), go back to wait
+          # Note: The conditions array might need careful parsing. This logic checks the "Completed" condition.
+          - condition: ${"conditions" in job1_status.status and job1_status.status.conditions[0].type == "Completed" and job1_status.status.conditions[0].status == "Unknown"}
+            next: wait_for_job1
+          # If succeeded (True), proceed
+          - condition: ${job1_status.status.conditions[0].type == "Completed" and job1_status.status.conditions[0].status == "True"}
+            next: start_job2
+          # If failed (False), stop workflow
+          - condition: ${job1_status.status.conditions[0].type == "Completed" and job1_status.status.conditions[0].status == "False"}
+            raise: ${"Job 1 failed with status " + job1_status.status.conditions[0].status}
+        next: wait_for_job1
+
+    # --- Step 3: Start Flashnet GPU Job ---
+    - start_job2:
+        call: googleapis.run.v1.namespaces.jobs.run
+        args:
+          name: ${"namespaces/" + project_id + "/jobs/" + job2_name}
+          location: ${location}
+        result: final_result
+    - return_result:
+        return: ${final_result}
