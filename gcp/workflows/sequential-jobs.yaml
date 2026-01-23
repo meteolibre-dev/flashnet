@@ -23,7 +23,7 @@ main:
         args:
           seconds: 30
     - check_job1_status:
-        call: googleapis.run.v1.namespaces.jobs.executions.get
+        call: googleapis.run.v1.namespaces.executions.get
         args:
           name: ${job1_execution.metadata.name}
         result: job1_status
