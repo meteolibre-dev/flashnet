@@ -4,7 +4,8 @@ main:
     - init:
         assign:
           - project_id: "meteoforecast"
-          - location: "europe-west1"
+          - location1: "europe-west3"
+          - location2: "europe-west1"
           - job1_name: "meteo-backend-job"
           - job2_name: "flashnet-backend-gpu-job"
 
@@ -13,7 +14,7 @@ main:
         call: googleapis.run.v1.namespaces.jobs.run
         args:
           name: ${"namespaces/" + project_id + "/jobs/" + job1_name}
-          location: ${location}
+          location: ${location1}
         result: job1_execution
 
     # --- Step 2: Custom Wait Loop for Job 1 ---
@@ -46,7 +47,7 @@ main:
         call: googleapis.run.v1.namespaces.jobs.run
         args:
           name: ${"namespaces/" + project_id + "/jobs/" + job2_name}
-          location: ${location}
+          location: ${location2}
         result: final_result
     - return_result:
         return: ${final_result}
