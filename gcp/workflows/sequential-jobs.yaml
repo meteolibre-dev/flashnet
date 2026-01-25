@@ -16,6 +16,8 @@ main:
           name: ${"namespaces/" + project_id + "/jobs/" + job1_name}
           location: ${location1}
         result: job1_execution
+    - debug_execution_name:
+        return: ${job1_execution.metadata.name}
 
     # --- Step 2: Custom Wait Loop for Job 1 ---
     # Cloud Run Jobs are async, so we must poll for completion
@@ -23,14 +25,10 @@ main:
         call: sys.sleep
         args:
           seconds: 30
-    - extract_execution_id:
-        assign:
-          # Extract just the execution ID from the metadata.name (last component after /)
-          - execution_id: ${strings.split(job1_execution.metadata.name, "/")[-1]}
     - check_job1_status:
         call: googleapis.run.v1.namespaces.executions.get
         args:
-          name: ${"namespaces/" + project_id + "/jobs/" + job1_name + "/executions/" + execution_id}
+          name: ${"namespaces/meteoforecast/jobs/meteo-backend-job/executions/" + job1_execution.metadata.name}
         result: job1_status
     - check_if_done:
         switch:
