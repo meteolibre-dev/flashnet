@@ -23,10 +23,14 @@ main:
         call: sys.sleep
         args:
           seconds: 30
+    - extract_execution_id:
+        assign:
+          # Extract just the execution ID from the metadata.name (last component after /)
+          - execution_id: ${strings.split(job1_execution.metadata.name, "/")[-1]}
     - check_job1_status:
         call: googleapis.run.v1.namespaces.executions.get
         args:
-          name: ${job1_execution.metadata.name}
+          name: ${"namespaces/" + project_id + "/jobs/" + job1_name + "/executions/" + execution_id}
         result: job1_status
     - check_if_done:
         switch:
