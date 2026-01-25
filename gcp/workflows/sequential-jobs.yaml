@@ -16,8 +16,6 @@ main:
           name: ${"namespaces/" + project_id + "/jobs/" + job1_name}
           location: ${location1}
         result: job1_execution
-    - debug_execution_name:
-        return: ${job1_execution.metadata.name}
 
     # --- Step 2: Custom Wait Loop for Job 1 ---
     # Cloud Run Jobs are async, so we must poll for completion
