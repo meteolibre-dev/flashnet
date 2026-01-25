@@ -533,7 +533,7 @@ class InferenceEngine:
             date_part, time_part = date_str.split("_")[0], date_str.split("_")[1]
             year, month, day = map(int, date_part.split("-"))
             hour, minute = map(int, time_part.split("-"))
-            initial_date = datetime(year, month, day, hour, minute) - timedelta(minutes=18 * 10)
+            initial_date = datetime(year, month, day, hour, minute)
 
             # Prepare initial context
             initial_frames = []
