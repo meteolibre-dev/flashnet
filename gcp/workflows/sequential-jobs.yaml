@@ -18,28 +18,28 @@ main:
         result: job1_execution
 
     # --- Step 2: Custom Wait Loop for Job 1 ---
-    # Cloud Run Jobs are async, so we must poll for completion
+    # Check job status directly (executions get garbage-collected after completion)
     - wait_for_job1:
         call: sys.sleep
         args:
           seconds: 30
     - check_job1_status:
-        call: googleapis.run.v1.namespaces.executions.get
+        call: googleapis.run.v1.namespaces.jobs.get
         args:
-          name: ${"namespaces/meteoforecast/jobs/meteo-backend-job/executions/" + job1_execution.metadata.name}
+          name: ${"namespaces/" + project_id + "/jobs/" + job1_name}
+          location: ${location1}
         result: job1_status
     - check_if_done:
         switch:
-          # If running/pending (status is Unknown condition), go back to wait
-          # Note: The conditions array might need careful parsing. This logic checks the "Completed" condition.
-          - condition: ${"conditions" in job1_status.status and job1_status.status.conditions[0].type == "Completed" and job1_status.status.conditions[0].status == "Unknown"}
+          # If job has no latest created execution, job is still running (Unknown)
+          - condition: ${job1_status.latestCreatedExecution == null or job1_status.status.conditions[0].status == "Unknown"}
             next: wait_for_job1
           # If succeeded (True), proceed
-          - condition: ${job1_status.status.conditions[0].type == "Completed" and job1_status.status.conditions[0].status == "True"}
+          - condition: ${job1_status.status.conditions[0].status == "True"}
             next: start_job2
           # If failed (False), stop workflow
-          - condition: ${job1_status.status.conditions[0].type == "Completed" and job1_status.status.conditions[0].status == "False"}
-            raise: ${"Job 1 failed with status " + job1_status.status.conditions[0].status}
+          - condition: ${job1_status.status.conditions[0].status == "False"}
+            raise: ${"Job 1 failed with status " + job1_status.status.conditions[0].message}
         next: wait_for_job1
 
     # --- Step 3: Start Flashnet GPU Job ---
