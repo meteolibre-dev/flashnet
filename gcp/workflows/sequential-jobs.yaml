@@ -32,7 +32,7 @@ main:
     - check_if_done:
         switch:
           # If job has no latest created execution, job is still running (Unknown)
-          - condition: ${map.get(job1_status, "latestCreatedExecution", null) == null or job1_status.status.conditions[0].status == "Unknown"}
+          - condition: ${default(map.get(job1_status, "latestCreatedExecution"), null) == null or job1_status.status.conditions[0].status == "Unknown"}
             next: wait_for_job1
           # If succeeded (True), proceed
           - condition: ${job1_status.status.conditions[0].status == "True"}
