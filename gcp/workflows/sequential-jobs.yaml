@@ -9,43 +9,41 @@ main:
           - job1_name: "meteo-backend-job"
           - job2_name: "flashnet-backend-gpu-job"
 
-    # --- Step 1: Start Meteo Job ---
     - start_job1:
         call: googleapis.run.v1.namespaces.jobs.run
         args:
           name: ${"namespaces/" + project_id + "/jobs/" + job1_name}
           location: ${location1}
-        result: job1_execution
+        result: job1_execution  # This contains the specific execution ID
 
-    # --- Step 2: Wait for Job 1 to complete ---
     - wait_for_job1:
         call: sys.sleep
         args:
           seconds: 30
 
     - check_job1_status:
-        call: googleapis.run.v1.namespaces.jobs.get
+        call: googleapis.run.v1.namespaces.executions.get
         args:
-          name: ${"namespaces/" + project_id + "/jobs/" + job1_name}
+          # Use the execution name returned from the start_job1 step
+          name: ${job1_execution.metadata.name}
           location: ${location1}
-        result: job1_status
+        result: exec_status
 
     - check_if_done:
         switch:
-          # Check if latest execution has completed
-          - condition: ${default(map.get(job1_status.status, "completionTime"), null) != null}
-            next: verify_success
-          # Check if latest execution failed
-          - condition: ${default(map.get(job1_status.status, "failed"), 0) > 0}
-            raise: 'Job 1 failed'
-          # Still running - continue waiting
+          # Check for Succeeded condition
+          - condition: ${default(map.get(exec_status.status, "completionTime"), null) != null}
+            next: check_for_failure
           - condition: ${true}
             next: wait_for_job1
 
-    - verify_success:
+    - check_for_failure:
+        switch:
+          # If it completed but has a 'failed' count > 0, raise error
+          - condition: ${default(map.get(exec_status.status, "failedCount"), 0) > 0}
+            raise: ${"Job 1 failed with status " + exec_status.status.conditions[0].message}
         next: start_job2
 
-    # --- Step 3: Start Flashnet GPU Job ---
     - start_job2:
         call: googleapis.run.v1.namespaces.jobs.run
         args:
