@@ -17,37 +17,32 @@ main:
           location: ${location1}
         result: job1_execution
 
-    # --- Step 2: Wait for Job 1 execution to complete ---
-    - get_execution_name:
-        assign:
-          - execution_name: ${job1_execution.metadata.name}
-
+    # --- Step 2: Wait for Job 1 to complete ---
     - wait_for_job1:
         call: sys.sleep
         args:
           seconds: 30
 
-    - check_job1_execution:
-        call: googleapis.run.v1.namespaces.jobs.executions.get
+    - check_job1_status:
+        call: googleapis.run.v1.namespaces.jobs.get
         args:
-          name: ${"namespaces/" + project_id + "/jobs/" + job1_name + "/executions/" + execution_name}
+          name: ${"namespaces/" + project_id + "/jobs/" + job1_name}
           location: ${location1}
-        result: execution_status
+        result: job1_status
 
     - check_if_done:
         switch:
-          # Check completion status - look for Completed condition
-          - condition: ${default(map.get(execution_status.status, "completionTime"), null) != null}
+          # Check if latest execution has completed
+          - condition: ${default(map.get(job1_status.status, "completionTime"), null) != null}
             next: verify_success
+          # Check if latest execution failed
+          - condition: ${default(map.get(job1_status.status, "failed"), 0) > 0}
+            raise: 'Job 1 failed'
           # Still running - continue waiting
           - condition: ${true}
             next: wait_for_job1
 
     - verify_success:
-        switch:
-          # Check if job succeeded (failedCount should be 0)
-          - condition: ${default(map.get(execution_status.status, "failedCount"), 0) > 0}
-            raise: 'Job 1 failed'
         next: start_job2
 
     # --- Step 3: Start Flashnet GPU Job ---
