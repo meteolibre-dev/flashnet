@@ -47,7 +47,7 @@ main:
         switch:
           # Check if job succeeded (failedCount should be 0)
           - condition: ${default(map.get(execution_status.status, "failedCount"), 0) > 0}
-            raise: ${"Job 1 failed: " + default(map.get(execution_status.status, "conditions"), [{"message": "Unknown error"}])[0].message}
+            raise: 'Job 1 failed'
         next: start_job2
 
     # --- Step 3: Start Flashnet GPU Job ---
