@@ -24,8 +24,8 @@ main:
     - check_job1_status:
         call: googleapis.run.v1.namespaces.executions.get
         args:
-          # Use the execution name returned from the start_job1 step
-          name: ${job1_execution.metadata.name}
+          # FIX: Construct the full resource path manually
+          name: ${"namespaces/" + project_id + "/executions/" + job1_execution.metadata.name}
           location: ${location1}
         result: exec_status
 
