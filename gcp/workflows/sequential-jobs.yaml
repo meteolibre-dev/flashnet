@@ -5,7 +5,7 @@ main:
         assign:
           - project_id: "meteoforecast"
           - location1: "europe-west3"
-          - location2: "europe-west1"
+          - location2: "europe-west4"
           - job1_name: "meteo-backend-job"
           - job2_name: "flashnet-backend-gpu-job"
 
