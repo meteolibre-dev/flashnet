@@ -58,7 +58,7 @@ jobs:
             --region ${{ env.GAR_LOCATION }} \
             --project ${{ env.PROJECT_ID }} \
             --cpu 20 \
-            --memory 16Gi \
+            --memory 80Gi \
             --gpu 1 \
             --gpu-type nvidia-rtx-pro-6000 \
             --no-gpu-zonal-redundancy \
