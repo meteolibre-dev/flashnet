@@ -46,7 +46,7 @@ jobs:
       - name: 'Deploy Cloud Scheduler'
         run: |
           # Define scheduler variables
-          SCHEDULE="0 8,15,20 * * *"
+          SCHEDULE="0 * * * *"
           URI="https://workflowexecutions.googleapis.com/v1/projects/${{ env.PROJECT_ID }}/locations/${{ env.REGION }}/workflows/${{ env.WORKFLOW_NAME }}/executions"
 
           echo "Deploying Cloud Scheduler job: ${{ env.SCHEDULER_JOB_NAME }}"
