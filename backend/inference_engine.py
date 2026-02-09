@@ -265,23 +265,26 @@ class InferenceEngine:
         patch_weights = patch_weights.view(1, 1, 1, self.patch_size, self.patch_size)
 
         # Create patch coordinates
-        y_starts1 = list(range(0, H_big - self.patch_size + 1, self.patch_size))
-        if (H_big - self.patch_size) % self.patch_size != 0:
-            y_starts1.append(H_big - self.patch_size)
-        x_starts1 = list(range(0, W_big - self.patch_size + 1, self.patch_size))
-        if (W_big - self.patch_size) % self.patch_size != 0:
-            x_starts1.append(W_big - self.patch_size)
-        patch_coords1 = [(x, y) for y in y_starts1 for x in x_starts1]
+        def get_starts(total, size, start_offset):
+            starts = list(range(start_offset, total - size + 1, size))
+            if not starts or starts[-1] != total - size:
+                if total >= size:
+                    starts.append(total - size)
+            return starts
 
         shift = self.patch_size // 2
-        y_starts2 = list(range(shift, H_big - self.patch_size + 1, self.patch_size))
-        if (H_big - self.patch_size - shift) % self.patch_size != 0 and H_big - self.patch_size > shift:
-            y_starts2.append(H_big - self.patch_size)
-        x_starts2 = list(range(shift, W_big - self.patch_size + 1, self.patch_size))
-        if (W_big - self.patch_size - shift) % self.patch_size != 0 and W_big - self.patch_size > shift:
-            x_starts2.append(W_big - self.patch_size)
-        patch_coords2 = [(x, y) for y in y_starts2 for x in x_starts2]
-        patch_coords = patch_coords1 + patch_coords2
+
+        y0 = get_starts(H_big, self.patch_size, 0)
+        x0 = get_starts(W_big, self.patch_size, 0)
+        yS = get_starts(H_big, self.patch_size, shift)
+        xS = get_starts(W_big, self.patch_size, shift)
+
+        coords1 = [(x, y) for y in y0 for x in x0] # Grid 1 (0, 0)
+        coords2 = [(x, y) for y in yS for x in xS] # Grid 2 (S, S)
+        coords3 = [(x, y) for y in y0 for x in xS] # Grid 3 (S, 0)
+        coords4 = [(x, y) for y in yS for x in x0] # Grid 4 (0, S)
+
+        patch_coords = list(set(coords1 + coords2 + coords3 + coords4))
 
         # Get metadata from HDF5 if available
         epsg = getattr(initial_context, 'epsg', 4326)
