@@ -279,12 +279,17 @@ class InferenceEngine:
         yS = get_starts(H_big, self.patch_size, shift)
         xS = get_starts(W_big, self.patch_size, shift)
 
+        # Base grids
         coords1 = [(x, y) for y in y0 for x in x0] # Grid 1 (0, 0)
         coords2 = [(x, y) for y in yS for x in xS] # Grid 2 (S, S)
-        coords3 = [(x, y) for y in y0 for x in xS] # Grid 3 (S, 0)
-        coords4 = [(x, y) for y in yS for x in x0] # Grid 4 (0, S)
 
-        patch_coords = list(set(coords1 + coords2 + coords3 + coords4))
+        # Extra bands for top/left/bottom/right coverage (fixes 1-patch overlap at borders)
+        extra_top = [(x, y0[0]) for x in xS]
+        extra_left = [(x0[0], y) for y in yS]
+        extra_bottom = [(x, y0[-1]) for x in xS]
+        extra_right = [(x0[-1], y) for y in yS]
+
+        patch_coords = list(set(coords1 + coords2 + extra_top + extra_left + extra_bottom + extra_right))
 
         # Get metadata from HDF5 if available
         epsg = getattr(initial_context, 'epsg', 4326)
