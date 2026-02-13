@@ -22,8 +22,8 @@ from tqdm.auto import tqdm
 
 # COG conversion
 try:
-    from rio_cogeo import cogeo_translate
-    from rio_cogeo.models import GTiff
+    from rio_cogeo.cogeo import cog_translate
+    from rio_cogeo.profiles import cog_profiles
     COG_AVAILABLE = True
 except ImportError:
     COG_AVAILABLE = False
@@ -63,7 +63,6 @@ def convert_to_cog(input_path: str, delete_original: bool = True) -> str:
         logger.warning(f"Input file not found: {input_path}")
         return input_path
 
-    # Create temporary file for COG
     import tempfile
     temp_dir = tempfile.gettempdir()
     temp_cog = os.path.join(temp_dir, f"temp_cog_{os.path.basename(input_path)}")
@@ -71,20 +70,24 @@ def convert_to_cog(input_path: str, delete_original: bool = True) -> str:
     try:
         logger.info(f"Converting to COG: {input_path}")
 
-        output_config = GTiff(
-            dtype="float32",
-            compress="DEFLATE",
-            tiled=True,
-            blockxsize=256,
-            blockysize=256,
-            overview_resampling="bilinear",
-            overview_level=5  # Creates 5 overview levels: 2, 4, 8, 16, 32
-        )
+        # Use the deflate profile (already has dtype, compress, tiled, blockxsize, blockysize)
+        output_profile = cog_profiles.get("deflate")
+        output_profile.update({
+            "blockxsize": 256,
+            "blockysize": 256,
+            "OVERVIEW_RESAMPLING": "bilinear",
+        })
 
-        cogeo_translate(
+        # Additional GDAL config options
+        config = {
+            "GDAL_NUM_THREADS": "ALL_CPUS",
+        }
+
+        cog_translate(
             input_path,
             temp_cog,
-            output_config,
+            output_profile,
+            config=config,
             quiet=True
         )
 
@@ -101,7 +104,6 @@ def convert_to_cog(input_path: str, delete_original: bool = True) -> str:
 
     except Exception as e:
         logger.error(f"Error converting to COG: {e}")
-        # Clean up temp file if it exists
         if os.path.exists(temp_cog):
             os.remove(temp_cog)
         return input_path
