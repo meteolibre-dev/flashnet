@@ -75,7 +75,6 @@ def convert_to_cog(input_path: str, delete_original: bool = True) -> str:
         output_profile.update({
             "blockxsize": 256,
             "blockysize": 256,
-            "OVERVIEW_RESAMPLING": "bilinear",
         })
 
         # Additional GDAL config options
@@ -88,6 +87,7 @@ def convert_to_cog(input_path: str, delete_original: bool = True) -> str:
             temp_cog,
             output_profile,
             config=config,
+            resampling="bilinear",
             quiet=True
         )
 
