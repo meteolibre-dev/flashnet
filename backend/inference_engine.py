@@ -20,6 +20,15 @@ import rasterio
 from suncalc import get_position
 from tqdm.auto import tqdm
 
+# COG conversion
+try:
+    from rio_cogeo import cogeo_translate
+    from rio_cogeo.models import GTiff
+    COG_AVAILABLE = True
+except ImportError:
+    COG_AVAILABLE = False
+    print("Warning: rio-cogeo not available. COG conversion will be skipped.")
+
 # Add project root to sys.path
 project_root = os.path.abspath(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 sys.path.insert(0, project_root)
@@ -34,6 +43,68 @@ from meteolibre_model.diffusion.rectified_flow_lightning_shortcut_xpred import (
 from safetensors.torch import load_file
 
 logger = logging.getLogger(__name__)
+
+
+def convert_to_cog(input_path: str, delete_original: bool = True) -> str:
+    """
+    Convert a TIFF to Cloud Optimized GeoTIFF format in-place.
+
+    Args:
+        input_path: Path to input TIFF
+        delete_original: Whether to delete the original non-COG file
+
+    Returns:
+        Path to the COG file (same as input_path if converted in-place)
+    """
+    if not COG_AVAILABLE:
+        return input_path
+
+    if not os.path.exists(input_path):
+        logger.warning(f"Input file not found: {input_path}")
+        return input_path
+
+    # Create temporary file for COG
+    import tempfile
+    temp_dir = tempfile.gettempdir()
+    temp_cog = os.path.join(temp_dir, f"temp_cog_{os.path.basename(input_path)}")
+
+    try:
+        logger.info(f"Converting to COG: {input_path}")
+
+        output_config = GTiff(
+            dtype="float32",
+            compress="DEFLATE",
+            tiled=True,
+            blockxsize=256,
+            blockysize=256,
+            overview_resampling="bilinear",
+            overview_level=5  # Creates 5 overview levels: 2, 4, 8, 16, 32
+        )
+
+        cogeo_translate(
+            input_path,
+            temp_cog,
+            output_config,
+            quiet=True
+        )
+
+        # Replace original with COG
+        if delete_original:
+            os.remove(input_path)
+            os.rename(temp_cog, input_path)
+            logger.info(f"COG created: {input_path}")
+        else:
+            os.rename(temp_cog, input_path.replace('.tiff', '_cog.tiff'))
+            logger.info(f"COG created: {input_path.replace('.tiff', '_cog.tiff')}")
+
+        return input_path
+
+    except Exception as e:
+        logger.error(f"Error converting to COG: {e}")
+        # Clean up temp file if it exists
+        if os.path.exists(temp_cog):
+            os.remove(temp_cog)
+        return input_path
 
 
 class InferenceStatus(Enum):
@@ -625,6 +696,9 @@ class InferenceEngine:
                         dst.write(sat_np[ch, crop_range], 1)
                     output_files.append(ch_path)
 
+                    # Convert to COG for faster tile serving
+                    convert_to_cog(ch_path)
+
                 # lightning_np has shape (1, H, W), we need (H, W)
                 lightning_np[lightning_np < 0.1] = 0
                 lightning_path = os.path.join(output_dir, f"{base_filename}_lightning.tiff")
@@ -643,6 +717,9 @@ class InferenceEngine:
                 ) as dst:
                     dst.write(lightning_np[0, crop_range], 1)
                 output_files.append(lightning_path)
+
+                # Convert to COG for faster tile serving
+                convert_to_cog(lightning_path)
 
                 logger.info(f"Saved forecast to {base_filename}_*.tiff")
 
