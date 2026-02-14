@@ -119,12 +119,16 @@ def upload_results(output_dir: str, gcs_client):
         gcs_client: GCP storage client
     """
     from backend.config import get_config
-    from datetime import datetime
 
     config = get_config()
     output_path = Path(output_dir)
 
-    date_prefix = datetime.now().strftime("%Y-%m-%d")
+    tiff_files = list(output_path.glob("*.tiff"))
+    if not tiff_files:
+        raise FileNotFoundError("No TIFF files found in output directory")
+
+    date_str = tiff_files[0].stem.split("_")[1]
+    date_prefix = f"{date_str[:4]}-{date_str[4:6]}-{date_str[6:8]}"
     dest_prefix = f"{config.gcp.dest_prefix}/{date_prefix}"
 
     uploaded = []
@@ -233,7 +237,7 @@ def run_pipeline(request: ProcessRequest):
         if request.date:
             target_date = datetime.strptime(request.date, "%Y-%m-%d %H:%M:%S")
         else:
-            target_date = datetime.now() - timedelta(hours=4)
+            target_date = datetime.now() - timedelta(hours=1)
 
         result = process_date_pipeline(target_date)
 
@@ -299,7 +303,7 @@ Examples:
         if args.date:
             target_date = datetime.strptime(args.date, "%Y-%m-%d %H:%M:%S")
         else:
-            target_date = datetime.now() - timedelta(hours=4)
+            target_date = datetime.now() - timedelta(hours=1)
 
         if args.model_path:
             os.environ["MODEL_PATH"] = args.model_path
