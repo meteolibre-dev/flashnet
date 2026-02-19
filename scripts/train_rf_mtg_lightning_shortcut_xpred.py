@@ -41,7 +41,7 @@ from meteolibre_model.models.jit3d_dual_v2 import DualJiT3D
 config_path = os.path.join(project_root, "meteolibre_model/config/configs.yml")
 with open(config_path) as f:
     config = yaml.safe_load(f)
-params = config['model_v15_mtg_world_lightning_shortcut']
+params = config['model_v16_mtg_world_lightning_shortcut']
 
 def main():
     # Initialize Accelerator with bfloat16 precision and logging
