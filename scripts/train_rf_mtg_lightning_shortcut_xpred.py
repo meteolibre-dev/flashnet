@@ -24,7 +24,8 @@ from torch.optim import Muon
 from safetensors.torch import load_file
 
 # Add project root to sys.path
-project_root = os.path.abspath("/workspace/flashnet/")
+#project_root = os.path.abspath("/workspace/flashnet/")
+project_root = os.path.abspath("/lustre/fswork/projects/rech/vyi/uay44fj/code/flashnet")
 sys.path.insert(0, project_root)
 
 from meteolibre_model.dataset.dataset_mtg_lightning_v2 import MeteoLibreMapDataset
