@@ -18,7 +18,7 @@ from accelerate.utils import DistributedDataParallelKwargs
 from safetensors.torch import save_file
 
 # custom optimizer TO REMOVE ?
-from heavyball import ForeachSOAP, ForeachMuon
+#from heavyball import ForeachSOAP, ForeachMuon
 from torch.optim import Muon
 
 from safetensors.torch import load_file
@@ -152,13 +152,15 @@ def main():
         # Create a list for Accelerate
         optimizer = [opt_muon, opt_adam]
     else:
-        model = DualUNet3DFiLM(**model_params)
-        optimizer = ForeachSOAP(model.parameters(), lr=learning_rate, foreach=False, warmup_steps=100)
+        #model = DualUNet3DFiLM(**model_params)
+        #optimizer = ForeachSOAP(model.parameters(), lr=learning_rate, foreach=False, warmup_steps=100)
+        exit()
 
-    model_path = "models/epoch_66_mtg_meteofrance_.safetensors"
-    state_dict = load_file(model_path)
+    #model_path = "models/epoch_66_mtg_meteofrance_.safetensors"
+    #state_dict = load_file(model_path)
     
-    model.load_state_dict(state_dict)
+    #model.load_state_dict(state_dict)
+
     model, optimizer, dataloader = accelerator.prepare(model, optimizer, dataloader)
 
     if isinstance(optimizer, list):
