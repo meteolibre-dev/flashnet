@@ -11,6 +11,8 @@
 #SBATCH --error=logs/%j.err
 
 module purge
+module load cpuarch/amd
 module load pytorch-gpu/py3/2.8.0   # ou ta version
 
-python3 ../scripts/train_rf_mtg_lightning_shortcut_xpred.py
+cd $WORK/code/flashnet
+python3 scripts/train_rf_mtg_lightning_shortcut_xpred.py
