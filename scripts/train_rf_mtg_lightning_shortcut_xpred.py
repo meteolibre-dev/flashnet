@@ -19,7 +19,7 @@ from safetensors.torch import save_file
 
 # custom optimizer TO REMOVE ?
 #from heavyball import ForeachSOAP, ForeachMuon
-from torch.optim import Muon
+#from torch.optim import Muon
 
 from safetensors.torch import load_file
 
@@ -144,8 +144,9 @@ def main():
         
         # 1. Muon for Transformer Internals (Matrices)
         # Note: Adjust momentum/nesterov args as per your Heavyball version if needed
-        opt_muon = Muon(muon_params, lr=learning_rate, momentum=0.95, weight_decay=0.1)
-        
+        #opt_muon = Muon(muon_params, lr=learning_rate, momentum=0.95, weight_decay=0.1)
+        opt_muon = torch.optim.AdamW(muon_params, lr=learning_rate, weight_decay=0.01)
+
         # 2. AdamW for Conv3d, Embeddings, Norms, Biases
         # Usually AdamW needs a lower LR than Muon
         opt_adam = torch.optim.AdamW(adamw_params, lr=learning_rate / 3, weight_decay=0.01)
