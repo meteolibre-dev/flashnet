@@ -11,7 +11,7 @@
 #SBATCH --error=logs/%j.err
 
 module purge
-module load cpuarch/amd
+module load arch/h100
 module load pytorch-gpu/py3/2.8.0   # ou ta version
 
 cd $WORK/code/flashnet
