@@ -15,5 +15,5 @@ module load arch/h100
 module load pytorch-gpu/py3/2.8.0   # ou ta version
 
 cd $WORK/code/flashnet
-pip install .
+pip install --user suncalc
 python3 scripts/train_rf_mtg_lightning_shortcut_xpred.py
