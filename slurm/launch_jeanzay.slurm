@@ -11,6 +11,6 @@
 #SBATCH --error=logs/%j.err
 
 module purge
-module load pytorch-gpu/py3/2.9.0   # ou ta version
+module load pytorch-gpu/py3/2.8.1   # ou ta version
 
-srun python3 ../meteolibre_model/scripts/train_rf_mtg_lightning_shortcut_xpred.py
+srun python3 ../scripts/train_rf_mtg_lightning_shortcut_xpred.py
