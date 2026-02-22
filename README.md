@@ -181,7 +181,7 @@ To visualize the results:
 ```bash
 pip install imageio[ffmpeg] cartopy
 
-python -m scripts.visualize_forecast_clean --data_file ../dataset/data_inference_full/2025-09-04_15-00_europe_full.h5 --forecast_dir generated_forecasts_shortcut_xpred --use_region --region_start_row 450 --region_end_row 2600 --region_start_col 0 --region_end_col 3500
+python -m scripts.visualize_forecast_clean --data_file ../dataset/data_inference_full/2025-09-08_22-50_europe_full.h5 --forecast_dir generated_forecasts_shortcut_xpred --use_region --region_start_row 450 --region_end_row 2600 --region_start_col 0 --region_end_col 3500
 ```
 
 Install uv:

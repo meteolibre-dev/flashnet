@@ -25,19 +25,15 @@ class DualJiT3D(nn.Module):
         context_dim=128,
         time_emb_dim=64,
         context_frames = 4,
-        intermediate_dim = 16,
     ):
         super().__init__()
         self.sat_out_channels = sat_out_channels
         self.context_frames = context_frames
 
-        self.kpi_encoder = nn.Conv3d(kpi_in_channels, intermediate_dim, kernel_size=1)
-        self.sat_encoder = nn.Conv3d(sat_in_channels, intermediate_dim, kernel_size=1)
-
         self.jit = JiT3D_Modern(
             img_size=img_size,
             patch_size=patch_size,
-            in_channels=intermediate_dim * 2,
+            in_channels=sat_in_channels + kpi_in_channels,
             out_channels=sat_out_channels + kpi_out_channels,
             embed_dim=embed_dim,
             depth=depth,
@@ -47,10 +43,8 @@ class DualJiT3D(nn.Module):
         )
 
     def forward(self, sat_input: torch.Tensor, kpi_input: torch.Tensor, context: torch.Tensor):
-        encoded_kpi = self.kpi_encoder(kpi_input)
-        encoded_sat = self.sat_encoder(sat_input)
 
-        combined_input = torch.cat([encoded_kpi, encoded_sat], dim=1)
+        combined_input = torch.cat([kpi_input, sat_input], dim=1)
         pred = self.jit(combined_input, context)
         sat_pred = pred[:, :self.sat_out_channels]
         kpi_pred = pred[:, self.sat_out_channels:]

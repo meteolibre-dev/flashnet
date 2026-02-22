@@ -18,11 +18,11 @@ sys.path.insert(0, project_root)
 config_path = os.path.join(project_root, "meteolibre_model/config/configs.yml")
 with open(config_path) as f:
     config = yaml.safe_load(f)
-params = config["model_v15_mtg_world_lightning_shortcut"]
+params = config["model_v16_mtg_world_lightning_shortcut"]
 
 # Constants for coordinates (will be set from HDF5 file)
 from meteolibre_model.models.unet3d_film_dual import DualUNet3DFiLM
-from meteolibre_model.models.jit3d_dual import DualJiT3D
+from meteolibre_model.models.jit3d_dual_v2 import DualJiT3D
 from meteolibre_model.diffusion.rectified_flow_lightning_shortcut_xpred import (
     normalize,
     denormalize,
@@ -169,11 +169,13 @@ def tiled_inference(
                 )
                 model_input_sat = model_input[:, :c_sat]
                 model_input_lightning = model_input[:, c_sat : (c_sat + c_lightning)]
-                sat_pred_batch, lightning_pred_batch = model(
-                    model_input_sat.float(),
-                    model_input_lightning.float(),
-                    torch.cat(context_global_batch, dim=0).float(),
-                )
+
+                with torch.autocast("cuda", dtype=torch.bfloat16):
+                    sat_pred_batch, lightning_pred_batch = model(
+                        model_input_sat.float(),
+                        model_input_lightning.float(),
+                        torch.cat(context_global_batch, dim=0).float(),
+                    )
                 x_pred_batch = torch.cat([sat_pred_batch, lightning_pred_batch], dim=1)[
                     :, :, T_ctx:, :, :
                 ]

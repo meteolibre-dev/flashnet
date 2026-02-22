@@ -19,13 +19,13 @@ from safetensors.torch import save_file
 
 # custom optimizer TO REMOVE ?
 #from heavyball import ForeachSOAP, ForeachMuon
-#from torch.optim import Muon
+from torch.optim import Muon
 
 from safetensors.torch import load_file
 
 # Add project root to sys.path
-#project_root = os.path.abspath("/workspace/flashnet/")
-project_root = os.path.abspath("/lustre/fswork/projects/rech/vyi/uay44fj/code/flashnet")
+project_root = os.path.abspath("/workspace/flashnet/")
+#project_root = os.path.abspath("/lustre/fswork/projects/rech/vyi/uay44fj/code/flashnet")
 sys.path.insert(0, project_root)
 
 from meteolibre_model.dataset.dataset_mtg_lightning_v2 import MeteoLibreMapDataset
@@ -77,7 +77,7 @@ def main():
     print("residual is :", residual)
 
     accelerator.init_trackers(
-        "lightning_shortcut-eps-prediction-training-rectified-flow_" + id_run, config=hps
+        "lightning_shortcut-xpred_" + id_run, config=hps
     )
 
     # Initialize dataset
@@ -144,8 +144,8 @@ def main():
         
         # 1. Muon for Transformer Internals (Matrices)
         # Note: Adjust momentum/nesterov args as per your Heavyball version if needed
-        #opt_muon = Muon(muon_params, lr=learning_rate, momentum=0.95, weight_decay=0.1)
-        opt_muon = torch.optim.AdamW(muon_params, lr=learning_rate, weight_decay=0.01)
+        opt_muon = Muon(muon_params, lr=learning_rate, momentum=0.95, weight_decay=0.1)
+        #opt_muon = torch.optim.AdamW(muon_params, lr=learning_rate, weight_decay=0.01)
 
         # 2. AdamW for Conv3d, Embeddings, Norms, Biases
         # Usually AdamW needs a lower LR than Muon
@@ -153,26 +153,21 @@ def main():
         
         # Create a list for Accelerate
         optimizer = [opt_muon, opt_adam]
+        
     else:
         #model = DualUNet3DFiLM(**model_params)
         #optimizer = ForeachSOAP(model.parameters(), lr=learning_rate, foreach=False, warmup_steps=100)
         exit()
 
-    #model_path = "models/epoch_66_mtg_meteofrance_.safetensors"
-    #state_dict = load_file(model_path)
+    model_path = "models/epoch_113_mtg_meteofrance_.safetensors"
+    state_dict = load_file(model_path)
     
-    #model.load_state_dict(state_dict)
+    model.load_state_dict(state_dict)
 
     model, optimizer, dataloader = accelerator.prepare(model, optimizer, dataloader)
 
     if isinstance(optimizer, list):
         optimizer = CombinedOptimizer(optimizer)
-
-    scheduler = torch.optim.lr_scheduler.MultiStepLR(
-        optimizer,
-        milestones=[20000, 40000, 70000, 100000],
-        gamma=1/5,
-    )
 
     global_step = 0
 
@@ -200,7 +195,6 @@ def main():
                 accelerator.clip_grad_norm_(model.parameters(), gradient_clip_value)
 
                 optimizer.step()
-                scheduler.step()
                 optimizer.zero_grad()
 
                 global_step += 1
