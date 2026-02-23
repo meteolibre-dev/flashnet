@@ -79,7 +79,8 @@ def extend_input_channels(state_dict, old_sat_in_channels, new_sat_in_channels):
             
             new_weight = torch.zeros(new_feat, old_weight.shape[1])
             new_weight[:old_feat] = old_weight
-            new_weight[old_feat:] = old_weight[-1:].mean(dim=0, keepdim=True)
+            # Initialize new output channel with ZEROS so old outputs remain unchanged
+            new_weight[old_feat:] = 0
             state_dict[key] = new_weight
             print(f"Transfer learning: extended {key} from {old_weight.shape} to {new_weight.shape}")
     
@@ -96,7 +97,8 @@ def extend_input_channels(state_dict, old_sat_in_channels, new_sat_in_channels):
             
             new_bias = torch.zeros(new_feat)
             new_bias[:old_feat] = old_bias
-            new_bias[old_feat:] = old_bias.mean()
+            # Initialize new output channel bias with ZERO
+            new_bias[old_feat:] = 0
             state_dict[key] = new_bias
             print(f"Transfer learning: extended {key} from {old_bias.shape} to {new_bias.shape}")
 
