@@ -42,6 +42,52 @@ with open(config_path) as f:
     config = yaml.safe_load(f)
 params = config['model_v16_mtg_europe_lightning_radar_shortcut']
 
+
+def extend_input_channels(state_dict, old_sat_in_channels, new_sat_in_channels):
+    """
+    Transfer learning: extend the first conv layer weights to accept additional input channels.
+    Also extends the output layer to account for increased output channels.
+    Copies existing channel weights and initializes new channels with the mean of existing ones.
+    """
+    if new_sat_in_channels <= old_sat_in_channels:
+        return state_dict
+    
+    kpi_in_channels = 1  # from config
+    kpi_out_channels = 1  # from config
+    
+    for key in list(state_dict.keys()):
+        # Extend input conv layer (patch_embed.proj)
+        if 'jit.patch_embed.proj.weight' in key:
+            old_weight = state_dict[key]
+            new_weight = torch.zeros(
+                old_weight.shape[0],
+                new_sat_in_channels + kpi_in_channels,
+                *old_weight.shape[2:]
+            )
+            new_weight[:, :old_sat_in_channels + kpi_in_channels] = old_weight
+            new_weight[:, old_sat_in_channels + kpi_in_channels:] = old_weight[:, :1].mean(dim=1, keepdim=True)
+            state_dict[key] = new_weight
+            print(f"Transfer learning: extended {key} from {old_weight.shape} to {new_weight.shape}")
+        
+        # Extend output linear layer (final_layer.linear)
+        if 'jit.final_layer.linear.weight' in key:
+            old_weight = state_dict[key]
+            old_out_ch = old_sat_in_channels + kpi_out_channels  # 18
+            new_out_ch = new_sat_in_channels + kpi_out_channels  # 19
+            
+            patch_t, patch_h, patch_w = 1, 8, 8  # from config
+            old_feat = old_out_ch * patch_t * patch_h * patch_w   # 18 * 64 = 1152
+            new_feat = new_out_ch * patch_t * patch_h * patch_w   # 19 * 64 = 1216
+            
+            new_weight = torch.zeros(new_feat, old_weight.shape[1])
+            new_weight[:old_feat] = old_weight
+            new_weight[old_feat:] = old_weight[-1:].mean(dim=0, keepdim=True)
+            state_dict[key] = new_weight
+            print(f"Transfer learning: extended {key} from {old_weight.shape} to {new_weight.shape}")
+    
+    return state_dict
+
+
 def main():
     # Initialize Accelerator with bfloat16 precision and logging
     kwargs = DistributedDataParallelKwargs(find_unused_parameters=True)
@@ -159,6 +205,12 @@ def main():
 
     model_path = "models/epoch_66_mtg_meteofrance_.safetensors"
     state_dict = load_file(model_path)
+    
+    # Transfer learning: extend the first conv layer to accept +1 radar channel
+    old_sat_in_channels = 17
+    new_sat_in_channels = model_params["sat_in_channels"]  # 18
+    
+    state_dict = extend_input_channels(state_dict, old_sat_in_channels, new_sat_in_channels)
     
     model.load_state_dict(state_dict)
     model, optimizer, dataloader = accelerator.prepare(model, optimizer, dataloader)
