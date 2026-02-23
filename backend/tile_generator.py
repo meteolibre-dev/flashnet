@@ -99,8 +99,8 @@ def lon_lat_to_tile(lon: float, lat: float, zoom: int) -> tuple:
 
 def get_tiles_for_region(bounds: dict, zoom: int) -> List[tuple]:
     """Get list of (x, y) tiles that cover the specified region."""
-    x_min, y_max = lon_lat_to_tile(bounds["lon_min"], bounds["lat_max"], zoom)
-    x_max, y_min = lon_lat_to_tile(bounds["lon_max"], bounds["lat_min"], zoom)
+    x_min, y_min = lon_lat_to_tile(bounds["lon_min"], bounds["lat_max"], zoom)
+    x_max, y_max = lon_lat_to_tile(bounds["lon_max"], bounds["lat_min"], zoom)
     
     tiles = []
     for x in range(x_min, x_max + 1):
