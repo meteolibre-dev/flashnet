@@ -2,7 +2,7 @@ import numpy as np
 import sys
 import os
 sys.path.append(os.path.join(os.path.dirname(__file__), '..'))
-from meteolibre_model.dataset.dataset_mtg_lightning import MeteoLibreMapDataset
+from meteolibre_model.dataset.dataset_mtg_lightning_radar import MeteoLibreMapDataset
 from tqdm import tqdm
 
 def compute_mean_std():
@@ -11,11 +11,14 @@ def compute_mean_std():
     """
     # Load the local dataset
     localrepo = "/workspace/dataset"
-    dataset = MeteoLibreMapDataset(localrepo=localrepo)
+    dataset = MeteoLibreMapDataset(localrepo=localrepo,
+            cache_size=4,
+        seed=44,
+        nb_temporal=7)
 
     # Use a smaller subset for quick estimation, or iterate over the whole dataset
     # for a more accurate result. Set num_samples to None to iterate over everything.
-    num_samples = 20000  # Or None
+    num_samples = 2000  # Or None
 
     print(f"Calculating mean and std over {num_samples or len(dataset)} samples, ignoring -10000...")
 
@@ -35,6 +38,12 @@ def compute_mean_std():
 
         # Process sat data
         sat_patch_data = sample["sat_patch_data"].numpy().astype(np.float32)
+
+        # count the number of nan in the radar data
+        isnan_radar = np.logical_or(np.isnan(sat_patch_data[:, -1, :, :]), sat_patch_data[:, -1, :, :] < -1.)
+
+        sat_patch_data[:, -1, :, :] = np.where(isnan_radar, -10000.0, sat_patch_data[:, -1, :, :])
+
         sat_masked_patch_data = np.ma.masked_equal(sat_patch_data, -10000.0)
 
         if sat_total_sum is None:

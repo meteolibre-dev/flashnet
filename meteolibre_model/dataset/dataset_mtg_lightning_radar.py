@@ -115,6 +115,9 @@ class MeteoLibreMapDataset(torch.utils.data.Dataset):
             .copy()
         )
 
+        isnan_radar = np.isnan(radar_patch_data)
+        radar_patch_data = np.where(isnan_radar, -10000.0, radar_patch_data)
+
         # now concat :)
         sat_patch_data = np.concatenate([sat_patch_data, groundheight_patch_data, radar_patch_data], axis=1)
 

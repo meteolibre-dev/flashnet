@@ -17,8 +17,7 @@ import yaml
 from accelerate.utils import DistributedDataParallelKwargs
 from safetensors.torch import save_file
 
-# custom optimizer TO REMOVE ?
-from heavyball import ForeachSOAP, ForeachMuon
+# 
 from torch.optim import Muon
 
 from safetensors.torch import load_file
@@ -33,8 +32,7 @@ from meteolibre_model.diffusion.rectified_flow_lightning_shortcut_xpred import (
     full_image_generation,
 )
 
-from meteolibre_model.models.unet3d_film_dual import DualUNet3DFiLM
-from meteolibre_model.models.jit3d_dual import DualJiT3D
+from meteolibre_model.models.jit3d_dual_v2 import DualJiT3D
 
 # Load config
 config_path = os.path.join(project_root, "meteolibre_model/config/configs.yml")
@@ -85,6 +83,23 @@ def extend_input_channels(state_dict, old_sat_in_channels, new_sat_in_channels):
             state_dict[key] = new_weight
             print(f"Transfer learning: extended {key} from {old_weight.shape} to {new_weight.shape}")
     
+
+        # Extend output linear layer bias
+        if 'jit.final_layer.linear.bias' in key:
+            old_bias = state_dict[key]
+            old_out_ch = old_sat_in_channels + kpi_out_channels  # 18
+            new_out_ch = new_sat_in_channels + kpi_out_channels  # 19
+            
+            patch_t, patch_h, patch_w = 1, 8, 8
+            old_feat = old_out_ch * patch_t * patch_h * patch_w
+            new_feat = new_out_ch * patch_t * patch_h * patch_w
+            
+            new_bias = torch.zeros(new_feat)
+            new_bias[:old_feat] = old_bias
+            new_bias[old_feat:] = old_bias.mean()
+            state_dict[key] = new_bias
+            print(f"Transfer learning: extended {key} from {old_bias.shape} to {new_bias.shape}")
+
     return state_dict
 
 
@@ -203,7 +218,7 @@ def main():
         model = DualUNet3DFiLM(**model_params)
         optimizer = ForeachSOAP(model.parameters(), lr=learning_rate, foreach=False, warmup_steps=100)
 
-    model_path = "models/epoch_66_mtg_meteofrance_.safetensors"
+    model_path = "models/models_world_shortcut/model_v16_mtg_world_lightning_shortcut_e120.safetensors"
     state_dict = load_file(model_path)
     
     # Transfer learning: extend the first conv layer to accept +1 radar channel

@@ -159,7 +159,7 @@ def main():
         #optimizer = ForeachSOAP(model.parameters(), lr=learning_rate, foreach=False, warmup_steps=100)
         exit()
 
-    model_path = "models/epoch_113_mtg_meteofrance_.safetensors"
+    model_path = "models/models_world_shortcut/model_v16_mtg_world_lightning_shortcut_e120.safetensors"
     state_dict = load_file(model_path)
     
     model.load_state_dict(state_dict)
