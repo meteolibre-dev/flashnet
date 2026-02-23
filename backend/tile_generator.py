@@ -25,8 +25,7 @@ from PIL import Image
 from io import BytesIO
 
 try:
-    from rio_tiler.io import COGReader
-    from rio_tiler.models import ImageBandStats
+    from rio_tiler.io import Reader
     RIO_TILER_AVAILABLE = True
 except ImportError:
     RIO_TILER_AVAILABLE = False
@@ -122,7 +121,7 @@ def generate_tile_rgba(cog_url: str, x: int, y: int, z: int, band: str) -> Optio
         return None
     
     try:
-        with COGReader(cog_url) as cog:
+        with Reader(cog_url) as cog:
             tile = cog.tile(x, y, z, tilesize=256, indexes=(1,))
             data = tile.data[0].astype(np.float32)
             
