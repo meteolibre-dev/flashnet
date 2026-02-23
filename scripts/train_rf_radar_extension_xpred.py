@@ -221,14 +221,16 @@ def main():
         optimizer = ForeachSOAP(model.parameters(), lr=learning_rate, foreach=False, warmup_steps=100)
 
     model_path = "models/models_world_shortcut/model_v16_mtg_world_lightning_shortcut_e120.safetensors"
+    #model_path = "models/epoch_15_mtg_meteofrance_.safetensors"
     state_dict = load_file(model_path)
     
-    # Transfer learning: extend the first conv layer to accept +1 radar channel
+    #### Transfer learning: extend the first conv layer to accept +1 radar channel
     old_sat_in_channels = 17
     new_sat_in_channels = model_params["sat_in_channels"]  # 18
     
     state_dict = extend_input_channels(state_dict, old_sat_in_channels, new_sat_in_channels)
-    
+    #### end transfert learning
+
     model.load_state_dict(state_dict)
     model, optimizer, dataloader = accelerator.prepare(model, optimizer, dataloader)
 
@@ -308,8 +310,8 @@ def main():
                 )
 
                 # Select one channel and one batch item for visualization
-                generated_sample = generated_images[0, 11]  # Shape: (1, H, W)
-                target_sample = x_target[0, 11].cpu()  # Shape: (1, H, W)
+                generated_sample = generated_images[0, 17]  # Shape: (1, H, W)
+                target_sample = x_target[0, 17].cpu()  # Shape: (1, H, W)
 
                 all_frames = torch.cat([generated_sample, target_sample], dim=0) / 8.0
                 all_frames = all_frames.clamp(-10, 10)

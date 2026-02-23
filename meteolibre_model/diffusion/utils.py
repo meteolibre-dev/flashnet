@@ -147,7 +147,7 @@ MEAN_CHANNEL_WORLD_ELEVATION_RADAR = torch.tensor(
         2.995656,
         12.74326,
         100.,
-        10.,
+        0.,
     ]
 )
 
@@ -170,7 +170,7 @@ STD_CHANNEL_WORLD_ELEVATION_RADAR = torch.tensor(
         1.0652865,
         4.8988175,
         400.,
-        10.,
+        15.,
     ]
 )
 
