@@ -723,6 +723,22 @@ class InferenceEngine:
                 # Convert to COG for faster tile serving
                 convert_to_cog(lightning_path)
 
+                # Generate pre-computed PNG tiles for fast static serving
+                try:
+                    from tile_generator import generate_tiles_for_timestamp
+                    
+                    logger.info(f"Generating PNG tiles for {base_filename}...")
+                    tile_result = generate_tiles_for_timestamp(
+                        timestamp=pred_date.strftime("%Y%m%d%H%M"),
+                        bands=["lightning", "sat_ch0", "sat_ch1"],
+                        zoom_levels=[3, 4, 5, 6, 7]
+                    )
+                    logger.info(f"Tile generation complete: {tile_result['total_tiles']} tiles created")
+                except ImportError as e:
+                    logger.warning(f"tile_generator not available, skipping tile generation: {e}")
+                except Exception as e:
+                    logger.error(f"Error generating tiles: {e}")
+
                 logger.info(f"Saved forecast to {base_filename}_*.tiff")
 
             result.status = InferenceStatus.COMPLETED
