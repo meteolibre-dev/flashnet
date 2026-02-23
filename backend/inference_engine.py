@@ -35,7 +35,7 @@ sys.path.insert(0, project_root)
 
 from meteolibre_model.models.jit3d_dual import DualJiT3D
 from meteolibre_model.models.unet3d_film_dual import DualUNet3DFiLM
-from meteolibre_model.diffusion.rectified_flow_lightning_shortcut_xpred import (
+from meteolibre_model.diffusion.rectified_flow_lightning_shortcut_xpred_prod import (
     normalize,
     denormalize,
     CLIP_MIN,
