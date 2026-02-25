@@ -220,7 +220,7 @@ def main():
         model = DualUNet3DFiLM(**model_params)
         optimizer = ForeachSOAP(model.parameters(), lr=learning_rate, foreach=False, warmup_steps=100)
 
-    model_path = "models/models_world_shortcut/model_v16_mtg_world_lightning_shortcut_e120.safetensors"
+    model_path = "models_world_shortcut/model_v16_mtg_world_lightning_shortcut_e120.safetensors"
     #model_path = "models/epoch_15_mtg_meteofrance_.safetensors"
     state_dict = load_file(model_path)
     
