@@ -598,6 +598,11 @@ class InferenceEngine:
                 sat_data = hf["sat_data"][:]
                 lightning_data = hf["lightning_data"][:]
                 radar_data = hf["radar_data"][:]
+
+                # nan correction
+                isnan_radar = np.isnan(radar_data)
+                radar_data = np.where(isnan_radar, -10000.0, radar_data)
+
                 num_frames = hf.attrs["num_frames"]
                 target_H = hf.attrs["target_height"]
                 target_W = hf.attrs["target_width"]
