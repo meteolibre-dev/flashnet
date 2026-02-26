@@ -27,7 +27,7 @@ class GCPConfig(BaseModel):
 class ModelConfig(BaseModel):
     """Model configuration."""
     model_path: str = "/tmp/flashnet_cache/model.safetensors"
-    model_gcs_path: str = "gs://eumetsat_mtg_preprocess/assets/model_v15_mtg_world_lightning_shortcut_jit_e160.safetensors"
+    model_gcs_path: str = "gs://eumetsat_mtg_preprocess/assets/model_v16_mtg_europe_lightning_shortcut_radar_e144.safetensors"
     model_type: str = "jit"
     patch_size: int = 128
     denoising_steps: int = 128
@@ -84,7 +84,7 @@ class Config(BaseModel):
             ),
             model=ModelConfig(
                 model_path=os.getenv("MODEL_PATH", "/tmp/flashnet_cache/model.safetensors"),
-                model_gcs_path=os.getenv("MODEL_GCS_PATH", "gs://eumetsat_mtg_preprocess/assets/model_v15_mtg_world_lightning_shortcut_jit_e160.safetensors"),
+                model_gcs_path=os.getenv("MODEL_GCS_PATH", "gs://eumetsat_mtg_preprocess/assets/model_v16_mtg_europe_lightning_shortcut_radar_e144.safetensors"),
                 model_type=os.getenv("MODEL_TYPE", "jit"),
                 patch_size=int(os.getenv("PATCH_SIZE", 128)),
                 denoising_steps=int(os.getenv("DENOISING_STEPS", 128)),

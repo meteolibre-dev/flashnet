@@ -33,9 +33,9 @@ except ImportError:
 project_root = os.path.abspath(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 sys.path.insert(0, project_root)
 
-from meteolibre_model.models.jit3d_dual import DualJiT3D
+from meteolibre_model.models.jit3d_dual_v2 import DualJiT3D
 from meteolibre_model.models.unet3d_film_dual import DualUNet3DFiLM
-from meteolibre_model.diffusion.rectified_flow_lightning_shortcut_xpred_prod import (
+from meteolibre_model.diffusion.rectified_flow_lightning_shortcut_xpred_radar_prod import (
     normalize,
     denormalize,
     CLIP_MIN,
@@ -181,7 +181,7 @@ class InferenceEngine:
         with open(config_path) as f:
             config = yaml.safe_load(f)
 
-        self.params = config["model_v15_mtg_world_lightning_shortcut"]
+        self.params = config["model_v16_mtg_europe_lightning_radar_shortcut"]
 
     def _download_model_from_gcs(self, gcs_path: str, local_path: str) -> None:
         """Download model from Google Cloud Storage.
@@ -308,8 +308,9 @@ class InferenceEngine:
         nb_forecast: int = 3,
         date: Optional[datetime] = None,
         output_dir: Optional[str] = None,
-        c_sat: int = 16,
+        c_sat: int = 18,
         c_lightning: int = 1,
+        c_radar: int = 1,
     ) -> tuple[torch.Tensor, torch.Tensor]:
         """Run tiled inference for weather forecasting.
 
@@ -319,8 +320,9 @@ class InferenceEngine:
             nb_forecast: Number of frames to forecast per model call
             date: Date for the first forecast step
             output_dir: Directory to save forecast files
-            c_sat: Number of satellite channels
+            c_sat: Number of satellite channels (including elevation and radar)
             c_lightning: Number of lightning channels
+            c_radar: Number of radar channels
 
         Returns:
             List of saved output file paths.
@@ -375,8 +377,9 @@ class InferenceEngine:
         else:
             transformer = None
 
-        c_sat = getattr(initial_context, 'c_sat', 16)
+        c_sat = getattr(initial_context, 'c_sat', 18)
         c_lightning = getattr(initial_context, 'c_lightning', 1)
+        c_radar = getattr(initial_context, 'c_radar', 1)
 
         d_const = 1.0 / self.denoising_steps
         all_sat_forecasts = []
@@ -594,14 +597,17 @@ class InferenceEngine:
             with h5py.File(data_path, "r") as hf:
                 sat_data = hf["sat_data"][:]
                 lightning_data = hf["lightning_data"][:]
+                radar_data = hf["radar_data"][:]
                 num_frames = hf.attrs["num_frames"]
                 target_H = hf.attrs["target_height"]
                 target_W = hf.attrs["target_width"]
                 transform = hf.attrs["transform"]
                 epsg = hf.attrs["epsg"]
                 elevation_data = hf["elevation_data"][:]
-                c_sat = hf.attrs["num_sat_channels"] + 1
+                # c_sat = num_sat_channels (16) + 1 (elevation) + num_radar_channels (1) = 18
+                c_sat = hf.attrs["num_sat_channels"] + 1 + hf.attrs["num_radar_channels"]
                 c_lightning = hf.attrs["num_lightning_channels"]
+                c_radar = hf.attrs["num_radar_channels"]
 
             if num_frames < self.context_frames:
                 raise ValueError(
@@ -621,11 +627,13 @@ class InferenceEngine:
             for i in range(self.context_frames):
                 sat_frame = sat_data[i]
                 lightning_frame = lightning_data[i]
+                radar_frame = radar_data[i]
                 elev_frame = elevation_data[None, :, :]
                 elev_frame = np.where(elev_frame < 0, -100, elev_frame)
 
-                sat_elev_frame = np.concatenate([sat_frame, elev_frame], axis=0)
-                frame = np.concatenate([sat_elev_frame, lightning_frame], axis=0)[None, ...]
+                # Concatenate sat + elevation + radar (now 18 channels: 16 sat + 1 elev + 1 radar)
+                sat_elev_radar_frame = np.concatenate([sat_frame, elev_frame, radar_frame], axis=0)
+                frame = np.concatenate([sat_elev_radar_frame, lightning_frame], axis=0)[None, ...]
                 initial_frames.append(frame)
 
             current_high_res_context = np.stack(initial_frames, axis=2)
@@ -643,6 +651,7 @@ class InferenceEngine:
             current_high_res_context.transform = transform
             current_high_res_context.c_sat = c_sat
             current_high_res_context.c_lightning = c_lightning
+            current_high_res_context.c_radar = c_radar
 
             # Run inference
             sat_forecast, lightning_forecast = self.tiled_inference(
