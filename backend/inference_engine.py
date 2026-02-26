@@ -311,7 +311,7 @@ class InferenceEngine:
         c_sat: int = 18,
         c_lightning: int = 1,
         c_radar: int = 1,
-    ) -> tuple[torch.Tensor, torch.Tensor]:
+    ) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
         """Run tiled inference for weather forecasting.
 
         Args:
@@ -384,6 +384,7 @@ class InferenceEngine:
         d_const = 1.0 / self.denoising_steps
         all_sat_forecasts = []
         all_lightning_forecasts = []
+        all_radar_forecasts = []
 
         current_step = 0
         current_high_res_context = initial_context
@@ -538,8 +539,11 @@ class InferenceEngine:
             sat_frame = x_t_full_res[:, :c_sat, :, :, :]
             lightning_frame = x_t_full_res[:, c_sat:, :, :, :]
             sat_denorm, lightning_denorm = denormalize(sat_frame, lightning_frame, self.device)
+            # Radar is the last channel (index 17 = -1) of sat_denorm which includes elevation + radar
+            radar_denorm = sat_denorm[:, -1, :, :]
             all_sat_forecasts.append(sat_denorm[:, [0, 11], :, :].cpu())
             all_lightning_forecasts.append(lightning_denorm.cpu())
+            all_radar_forecasts.append(radar_denorm.cpu())
             del sat_denorm, lightning_denorm
 
             # Update context for next autoregressive step
@@ -562,7 +566,8 @@ class InferenceEngine:
 
         sat_forecast = torch.cat(all_sat_forecasts, dim=2)
         lightning_forecast = torch.cat(all_lightning_forecasts, dim=2)
-        return sat_forecast, lightning_forecast
+        radar_forecast = torch.cat(all_radar_forecasts, dim=1)
+        return sat_forecast, lightning_forecast, radar_forecast
 
     def run_inference(
         self,
@@ -659,7 +664,7 @@ class InferenceEngine:
             current_high_res_context.c_radar = c_radar
 
             # Run inference
-            sat_forecast, lightning_forecast = self.tiled_inference(
+            sat_forecast, lightning_forecast, radar_forecast = self.tiled_inference(
                 initial_context=current_high_res_context,
                 forecast_steps=forecast_steps,
                 nb_forecast=nb_forecast,
@@ -680,6 +685,7 @@ class InferenceEngine:
                 sat_frame = self._fill_bad_pixels(sat_frame, CLIP_MIN)
                 
                 lightning_frame = lightning_forecast[:, :, k, :, :]
+                radar_frame = radar_forecast[:, k:k+1, :, :]
                 pred_date = initial_date + timedelta(minutes=10 * (k + 1))
                 base_filename = f"forecast_{pred_date.strftime('%Y%m%d%H%M')}"
 
@@ -736,6 +742,30 @@ class InferenceEngine:
 
                 # Convert to COG for faster tile serving
                 convert_to_cog(lightning_path)
+
+                # Save radar forecast as TIFF (radar_forecast shape: (B, T, H, W))
+                radar_np = radar_frame.squeeze(0).squeeze(0).cpu().numpy().astype(np.float32)
+                # Replace very low values with NaN for transparency
+                radar_np[radar_np < -5000] = np.nan
+                radar_path = os.path.join(output_dir, f"{base_filename}_radar.tiff")
+                with rasterio.open(
+                    radar_path,
+                    'w',
+                    driver='GTiff',
+                    height=radar_np[crop_range].shape[0],
+                    width=radar_np.shape[1],
+                    count=1,
+                    dtype=radar_np.dtype,
+                    crs=crs,
+                    transform=transform,
+                    nodata=np.nan,
+                    compress='deflate'
+                ) as dst:
+                    dst.write(radar_np[crop_range], 1)
+                output_files.append(radar_path)
+
+                # Convert to COG for faster tile serving
+                convert_to_cog(radar_path)
 
                 logger.info(f"Saved forecast to {base_filename}_*.tiff")
 
