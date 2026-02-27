@@ -746,7 +746,7 @@ class InferenceEngine:
                 # Save radar forecast as TIFF (radar_forecast shape: (B, T, H, W))
                 radar_np = radar_frame.squeeze(0).squeeze(0).cpu().numpy().astype(np.float32)
                 # Replace very low values with NaN for transparency
-                radar_np[radar_np < -5000] = np.nan
+                radar_np[radar_np < 0] = np.nan
                 radar_path = os.path.join(output_dir, f"{base_filename}_radar.tiff")
                 with rasterio.open(
                     radar_path,
