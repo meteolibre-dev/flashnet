@@ -70,16 +70,38 @@ def convert_to_cog(input_path: str, delete_original: bool = True) -> str:
     try:
         logger.info(f"Converting to COG: {input_path}")
 
+        # Get image dimensions to choose optimal block size
+        with rasterio.open(input_path) as src:
+            height = src.height
+            width = src.width
+
+        # Choose block size that divides evenly into dimensions
+        # Common factors: 256, 512, 1024
+        # Find the largest power of 2 that divides both dimensions
+        def get_optimal_block_size(dim):
+            for size in [512, 256, 128, 64]:
+                if dim % size == 0:
+                    return size
+            return 256  # fallback
+
+        block_size = min(get_optimal_block_size(height), get_optimal_block_size(width), 512)
+        
+        logger.info(f"Using block size {block_size}x{block_size} for {width}x{height} image")
+
         # Use the deflate profile (already has dtype, compress, tiled, blockxsize, blockysize)
         output_profile = cog_profiles.get("deflate")
         output_profile.update({
-            "blockxsize": 256,
-            "blockysize": 256,
+            "blockxsize": block_size,
+            "blockysize": block_size,
         })
 
-        # Additional GDAL config options
+        # Additional GDAL config options for better compatibility
         config = {
             "GDAL_NUM_THREADS": "ALL_CPUS",
+            # Ensure proper block alignment
+            "GDAL_TIFF_INTERNAL_MASK": "YES",
+            # Use older compression for better compatibility
+            "COMPRESS_OVERVIEW": "DEFLATE",
         }
 
         cog_translate(
@@ -90,6 +112,15 @@ def convert_to_cog(input_path: str, delete_original: bool = True) -> str:
             resampling="bilinear",
             quiet=True
         )
+
+        # Verify the COG was created properly
+        if os.path.exists(temp_cog):
+            with rasterio.open(temp_cog) as cog_src:
+                # Check that it's properly tiled
+                if cog_src.profile.get('tiled', False):
+                    logger.info(f"COG verified: {cog_src.width}x{cog_src.height}, block={cog_src.blocks}")
+                else:
+                    logger.warning(f"COG may not be properly tiled: {cog_src.profile}")
 
         # Replace original with COG
         if delete_original:
@@ -713,7 +744,10 @@ class InferenceEngine:
                         crs=crs,
                         transform=transform,
                         nodata=np.nan,
-                        compress='deflate'
+                        compress='deflate',
+                        tiled=True,
+                        blockxsize=512,
+                        blockysize=512
                     ) as dst:
                         dst.write(sat_np[ch, crop_range], 1)
                     output_files.append(ch_path)
@@ -722,7 +756,9 @@ class InferenceEngine:
                     convert_to_cog(ch_path)
 
                 # lightning_np has shape (1, H, W), we need (H, W)
-                lightning_np[lightning_np < 0.1] = 0
+                # Use -9999 as nodata instead of 0, since 0 is a valid data value
+                # First set values below threshold to nodata value
+                lightning_np[lightning_np < 0.1] = -9999
                 lightning_path = os.path.join(output_dir, f"{base_filename}_lightning.tiff")
                 with rasterio.open(
                     lightning_path,
@@ -734,8 +770,11 @@ class InferenceEngine:
                     dtype=lightning_np[0].dtype,
                     crs=crs,
                     transform=transform,
-                    nodata=0,
-                    compress='deflate'
+                    nodata=-9999,
+                    compress='deflate',
+                    tiled=True,
+                    blockxsize=512,
+                    blockysize=512
                 ) as dst:
                     dst.write(lightning_np[0, crop_range], 1)
                 output_files.append(lightning_path)
@@ -759,7 +798,10 @@ class InferenceEngine:
                     crs=crs,
                     transform=transform,
                     nodata=np.nan,
-                    compress='deflate'
+                    compress='deflate',
+                    tiled=True,
+                    blockxsize=512,
+                    blockysize=512
                 ) as dst:
                     dst.write(radar_np[crop_range], 1)
                 output_files.append(radar_path)
