@@ -20,7 +20,7 @@ main:
     - wait_for_job1:
         call: sys.sleep
         args:
-          seconds: 30
+          seconds: 10
 
     - check_job1_status:
         call: googleapis.run.v1.namespaces.executions.get
@@ -55,7 +55,7 @@ main:
     - wait_for_job2:
         call: sys.sleep
         args:
-          seconds: 30
+          seconds: 10
 
     - check_job2_status:
         call: googleapis.run.v1.namespaces.executions.get
