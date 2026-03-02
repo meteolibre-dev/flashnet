@@ -118,7 +118,7 @@ def convert_to_cog(input_path: str, delete_original: bool = True) -> str:
             with rasterio.open(temp_cog) as cog_src:
                 # Check that it's properly tiled
                 if cog_src.profile.get('tiled', False):
-                    logger.info(f"COG verified: {cog_src.width}x{cog_src.height}, block={cog_src.blocks}")
+                    logger.info(f"COG verified: {cog_src.width}x{cog_src.height}, block={cog_src.block_shapes}")
                 else:
                     logger.warning(f"COG may not be properly tiled: {cog_src.profile}")
 
