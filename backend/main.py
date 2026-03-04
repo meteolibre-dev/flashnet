@@ -127,16 +127,33 @@ def upload_results(output_dir: str, gcs_client):
     if not tiff_files:
         raise FileNotFoundError("No TIFF files found in output directory")
 
-    date_str = tiff_files[0].stem.split("_")[1]
-    date_prefix = f"{date_str[:4]}-{date_str[4:6]}-{date_str[6:8]}"
-    dest_prefix = f"{config.gcp.dest_prefix}/{date_prefix}"
+    # Group files by their date folder based on the timestamp in the filename
+    # Each file may have a different date if there are files from multiple inference runs
+    files_by_date = {}
+    for filepath in tiff_files:
+        try:
+            # Filename format: forecast_YYYYMMDDHHMM_<type>.tiff
+            date_str = filepath.stem.split("_")[1]
+            date_prefix = f"{date_str[:4]}-{date_str[4:6]}-{date_str[6:8]}"
+            if date_prefix not in files_by_date:
+                files_by_date[date_prefix] = []
+            files_by_date[date_prefix].append(filepath)
+        except (IndexError, ValueError) as e:
+            logger.warning(f"Could not parse date from filename {filepath.name}: {e}")
+            continue
+
+    if not files_by_date:
+        raise ValueError("Could not parse dates from any TIFF files")
 
     uploaded = []
-    for filepath in output_path.glob("*.tiff"):
-        dest_blob_name = f"{dest_prefix}/{filepath.name}"
-        gcs_client.upload_file(str(filepath), dest_blob_name)
-        uploaded.append(filepath.name)
-        logger.info(f"Uploaded {filepath.name} to {config.gcp.dest_bucket}/{dest_blob_name}")
+    # Upload each file to its correct date folder based on the timestamp in the filename
+    for date_prefix, files in files_by_date.items():
+        dest_prefix = f"{config.gcp.dest_prefix}/{date_prefix}"
+        for filepath in files:
+            dest_blob_name = f"{dest_prefix}/{filepath.name}"
+            gcs_client.upload_file(str(filepath), dest_blob_name)
+            uploaded.append(filepath.name)
+            logger.info(f"Uploaded {filepath.name} to {config.gcp.dest_bucket}/{dest_blob_name}")
 
     return uploaded
 
