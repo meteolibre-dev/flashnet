@@ -111,7 +111,7 @@ def main():
 
     accelerator = Accelerator(
         mixed_precision="bf16",
-        gradient_accumulation_steps=2,
+        gradient_accumulation_steps=4,
         log_with="tensorboard",
         project_dir=".",
         kwargs_handlers=[kwargs],
@@ -155,7 +155,7 @@ def main():
         dataset,
         batch_size=batch_size,
         shuffle=False,
-        num_workers=8,  # os.cpu_count() // 2,  # Use half the available CPUs
+        num_workers=16,  # os.cpu_count() // 2,  # Use half the available CPUs
         pin_memory=True,
     )
 
@@ -201,7 +201,7 @@ def main():
         print("Jit model")
         model = DualJiT3D(**model_params)
 
-        #model = torch.compile(model)
+        model = torch.compile(model)
 
         # here we 
 
