@@ -38,7 +38,7 @@ from meteolibre_model.models.jit3d_dual_v2 import DualJiT3D
 config_path = os.path.join(project_root, "meteolibre_model/config/configs.yml")
 with open(config_path) as f:
     config = yaml.safe_load(f)
-params = config['model_v16_mtg_europe_lightning_radar_shortcut']
+params = config['model_v17_mtg_europe_lightning_radar_shortcut']
 
 
 def extend_input_channels(state_dict, old_sat_in_channels, new_sat_in_channels):
@@ -145,7 +145,7 @@ def main():
     # Initialize dataset
     dataset = MeteoLibreMapDataset(
         localrepo=params['dataset_path'],
-        cache_size=4,
+        cache_size=10,
         seed=seed,
         nb_temporal=7
     )
@@ -155,7 +155,7 @@ def main():
         dataset,
         batch_size=batch_size,
         shuffle=False,
-        num_workers=16,  # os.cpu_count() // 2,  # Use half the available CPUs
+        num_workers=8,  # os.cpu_count() // 2,  # Use half the available CPUs
         pin_memory=True,
     )
 
@@ -197,9 +197,11 @@ def main():
                 opt.load_state_dict(state)
 
     if params["model_type"] == "jit":
+
+        print("Jit model")
         model = DualJiT3D(**model_params)
 
-        model = torch.compile(model)
+        #model = torch.compile(model)
 
         # here we 
 
@@ -220,18 +222,18 @@ def main():
         model = DualUNet3DFiLM(**model_params)
         optimizer = ForeachSOAP(model.parameters(), lr=learning_rate, foreach=False, warmup_steps=100)
 
-    model_path = "models_world_shortcut/model_v16_mtg_world_lightning_shortcut_e120.safetensors"
-    #model_path = "models/epoch_15_mtg_meteofrance_.safetensors"
-    state_dict = load_file(model_path)
+    # model_path = "models_world_shortcut/model_v16_mtg_world_lightning_shortcut_e120.safetensors"
+    # #model_path = "models/epoch_15_mtg_meteofrance_.safetensors"
+    # state_dict = load_file(model_path)
     
-    #### Transfer learning: extend the first conv layer to accept +1 radar channel
-    old_sat_in_channels = 17
-    new_sat_in_channels = model_params["sat_in_channels"]  # 18
+    # #### Transfer learning: extend the first conv layer to accept +1 radar channel
+    # old_sat_in_channels = 17
+    # new_sat_in_channels = model_params["sat_in_channels"]  # 18
     
-    state_dict = extend_input_channels(state_dict, old_sat_in_channels, new_sat_in_channels)
-    #### end transfert learning
+    # state_dict = extend_input_channels(state_dict, old_sat_in_channels, new_sat_in_channels)
+    # #### end transfert learning
 
-    model.load_state_dict(state_dict)
+    # model.load_state_dict(state_dict)
     model, optimizer, dataloader = accelerator.prepare(model, optimizer, dataloader)
 
     if isinstance(optimizer, list):
