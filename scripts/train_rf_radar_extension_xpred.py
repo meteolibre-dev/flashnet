@@ -5,6 +5,7 @@ This script trains a rectified flow model using the MeteoLibreMapDataset and UNe
 
 import sys
 import os
+import argparse
 import torch
 from torch.utils.data import DataLoader
 from torchvision.utils import make_grid
@@ -106,6 +107,20 @@ def extend_input_channels(state_dict, old_sat_in_channels, new_sat_in_channels):
 
 
 def main():
+    # Parse command-line arguments
+    parser = argparse.ArgumentParser(description="Train or export MeteoLibre model")
+    parser.add_argument("--export", type=str, help="Path to .safetensors weights file to export to TorchScript")
+    parser.add_argument("-o", "--output", type=str, default="model_scripted.pt", help="Output path for TorchScript model")
+    parser.add_argument("--model-type", type=str, default=None, help="Model type: 'jit' or 'unet' (defaults to config value)")
+    args = parser.parse_args()
+    
+    # If --export is provided, run export and exit
+    if args.export:
+        model_params = params["model"]
+        model_type = args.model_type if args.model_type else params.get("model_type", "jit")
+        export_torchscript(model_params, args.export, args.output, model_type)
+        return
+    
     # Initialize Accelerator with bfloat16 precision and logging
     kwargs = DistributedDataParallelKwargs(find_unused_parameters=True)
 
@@ -357,6 +372,63 @@ def main():
         torch.save(model.state_dict(), "meteolibre_model_rectified_flow.pth")
         print("Training complete. Model saved to meteolibre_model_rectified_flow.pth")
 
+
+def export_torchscript(model_params: dict, weights_path: str, output_path: str = "model_scripted.pt", model_type: str = "jit"):
+    """
+    Export a trained model to TorchScript format for inference.
+    
+    Args:
+        model_params: Dictionary of model parameters (from config)
+        weights_path: Path to the .safetensors weights file
+        output_path: Output path for the TorchScript model
+        model_type: "jit" for DualJiT3D or "unet" for DualUNet3DFiLM
+    
+    Example usage:
+        model_params = config['model_v17_mtg_europe_lightning_radar_shortcut']["model"]
+        export_torchscript(model_params, "models/epoch_10_mtg_meteofrance_.safetensors", "model_scripted.pt")
+    """
+    from meteolibre_model.models.jit3d_dual_v2 import DualJiT3D
+    from meteolibre_model.models.dual_unet_film import DualUNet3DFiLM
+    
+    # Initialize model (same architecture as training)
+    if model_type == "jit":
+        model = DualJiT3D(**model_params)
+    else:
+        model = DualUNet3DFiLM(**model_params)
+    
+    # Load trained weights
+    state_dict = load_file(weights_path)
+    model.load_state_dict(state_dict)
+    model.eval()
+    
+    # Export to TorchScript
+    scripted = torch.jit.script(model)
+    scripted.save(output_path)
+    print(f"TorchScript model saved to {output_path}")
+    
+    return scripted
+
+
+# --- One-time export script (run locally or in a build step) ---
+# Usage: python train_rf_radar_extension_xpred.py --export path/to/weights.safetensors -o model_scripted.pt
+#        python train_rf_radar_extension_xpred.py --export path/to/weights.safetensors -o model_scripted.pt --model-type jit
+#
+# Or uncomment and modify the paths below to export a trained model to TorchScript format:
+#
+# if __name__ == "__main__":
+#     # Load config
+#     config_path = os.path.join(project_root, "meteolibre_model/config/configs.yml")
+#     with open(config_path) as f:
+#         config = yaml.safe_load(f)
+#     params = config['model_v17_mtg_europe_lightning_radar_shortcut']
+#     model_params = params["model"]
+#
+#     # Export the model (modify paths as needed)
+#     export_torchscript(
+#         model_params=model_params,
+#         weights_path="models/epoch_10_mtg_meteofrance_.safetensors",
+#         output_path="model_scripted.pt"
+#     )
 
 if __name__ == "__main__":
     main()
