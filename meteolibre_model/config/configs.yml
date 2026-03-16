@@ -619,13 +619,13 @@ model_v17_mtg_europe_lightning_radar_shortcut:
   model_dir: "models/"
   parametrization: "standard"
   interpolation: "linear"
-  batch_size: 64
+  batch_size: 128
   learning_rate: 0.0003
   num_epochs: 200
   seed: 42
   gen_steps: 4
   nb_forecast: 3
-  sigma_noise_input: 0.1
+  sigma_noise_input: 0.02
   gradient_clip_value: 1.0
   residual: False
   dataset_path: "/workspace/dataset"

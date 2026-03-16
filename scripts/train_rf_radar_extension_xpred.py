@@ -27,7 +27,7 @@ project_root = os.path.abspath("/workspace/flashnet/")
 sys.path.insert(0, project_root)
 
 from meteolibre_model.dataset.dataset_mtg_lightning_radar import MeteoLibreMapDataset
-from meteolibre_model.diffusion.rectified_flow_lightning_shortcut_xpred import (
+from meteolibre_model.diffusion.rectified_flow_lightning_shortcut_xpred_reflow import (
     trainer_step,
     full_image_generation,
 )
@@ -111,7 +111,7 @@ def main():
 
     accelerator = Accelerator(
         mixed_precision="bf16",
-        gradient_accumulation_steps=4,
+        gradient_accumulation_steps=2,
         log_with="tensorboard",
         project_dir=".",
         kwargs_handlers=[kwargs],
@@ -130,6 +130,9 @@ def main():
     seed = params['seed']
     residual = bool(params.get('residual', True))
     sigma_noise_input = params['sigma_noise_input']
+
+    print("sigma_noise_input: ", sigma_noise_input)
+
     gradient_clip_value = params['gradient_clip_value']
     id_run = str(datetime.utcnow())[:19]
     # Set seed for reproducibility
