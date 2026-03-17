@@ -443,7 +443,7 @@ class InferenceEngine:
 
                 t_val = 1.0 - i * d_const
                 t_batch_val = torch.full((1,), t_val, device=self.device)
-                d_batch_val = torch.full((1,), d_const, device=self.device)
+                d_batch_val = torch.full((1,), 0, device=self.device)
 
                 for i_batch in range(0, len(patch_coords), self.batch_size):
                     coords_batch = patch_coords[i_batch : i_batch + self.batch_size]

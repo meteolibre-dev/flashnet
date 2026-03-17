@@ -48,7 +48,7 @@ ENV MODE=cli
 ENV LOG_LEVEL=INFO
 ENV CACHE_DIR=/tmp/flashnet_cache
 ENV MODEL_PATH=/tmp/flashnet_cache/model.safetensors
-ENV MODEL_GCS_PATH=gs://eumetsat_mtg_preprocess/assets/model_v16_mtg_europe_lightning_shortcut_radar_e144.safetensors
+ENV MODEL_GCS_PATH=gs://eumetsat_mtg_preprocess/assets/radar_finetune_v2_sigma0dot02.safetensors
 
 # Default command
 CMD ["python3", "backend/main.py", "--mode=cli"]
