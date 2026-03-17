@@ -176,9 +176,9 @@ def main():
         exit()
 
     # model_path = "models_world_shortcut/model_v16_mtg_world_lightning_shortcut_e120.safetensors"
-    model_path = "models/radar_finetune_v2_sigma0dot02.safetensors"
-    state_dict = load_file(model_path)
-    model.load_state_dict(state_dict)
+    # model_path = "models/radar_finetune_v2_sigma0dot02.safetensors"
+    # state_dict = load_file(model_path)
+    # model.load_state_dict(state_dict)
 
     model, optimizer, dataloader = accelerator.prepare(model, optimizer, dataloader)
 
@@ -234,8 +234,6 @@ def main():
 
                 total_loss += loss.item()
                 progress_bar.set_postfix(loss=loss.item())
-
-                break
 
         # Calculate average loss for the epoch
         avg_loss = total_loss / len(dataloader)

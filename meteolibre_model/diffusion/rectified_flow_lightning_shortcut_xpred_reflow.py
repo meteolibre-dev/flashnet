@@ -125,10 +125,7 @@ def trainer_step(
 
     x_context = batch_data[:, :, : model.context_frames]
 
-    if sigma > 0:
-        # We add noise to the context, including the one used for residual if use_residual is True
-        # because x_context is a view of batch_data.
-        x_context += torch.randn_like(x_context) * sigma
+
 
     if use_residual:
         x0 = batch_data[:, :, model.context_frames:] - batch_data[:, :, model.context_frames-1:model.context_frames]
@@ -139,13 +136,10 @@ def trainer_step(
 
     x1 = torch.randn_like(x0)
 
-
-
     loss_sat = loss_lightning = 0.0
 
     # ====================== EMPIRICAL (flow-matching) PART ======================
     num_emp = b
-    x_context_emp = x_context
     x0_emp = x0
 
     x1_emp = x1
@@ -153,6 +147,12 @@ def trainer_step(
     mask_emp = mask_data_sat[:num_emp, :, model.context_frames:]
 
     t_emp = torch.rand(num_emp, device=device)
+
+    if sigma > 0:
+        # We add noise to the context, including the one used for residual if use_residual is True
+        # because x_context is a view of batch_data.
+        x_context += torch.randn_like(x_context) * sigma * t_emp.view(num_emp,1,1,1,1)
+
 
     xt_emp = get_x_t_rf(x0_emp, x1_emp, t_emp.view(num_emp,1,1,1,1), interpolation)
 
@@ -166,7 +166,7 @@ def trainer_step(
     da_dt = da_dt.view(num_emp, 1, 1, 1, 1)
 
     # model predicts clean target (x-prediction)
-    model_input_emp = torch.cat([x_context_emp, xt_emp], dim=2)
+    model_input_emp = torch.cat([x_context, xt_emp], dim=2)
     context_global_emp = torch.cat([context_info_emp, t_emp.unsqueeze(1), torch.zeros_like(t_emp).unsqueeze(1)], dim=1)
 
     sat_x_pred_emp, lightning_x_pred_emp = model(
