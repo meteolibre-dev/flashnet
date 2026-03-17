@@ -42,70 +42,6 @@ with open(config_path) as f:
 params = config['model_v17_mtg_europe_lightning_radar_shortcut']
 
 
-def extend_input_channels(state_dict, old_sat_in_channels, new_sat_in_channels):
-    """
-    Transfer learning: extend the first conv layer weights to accept additional input channels.
-    Also extends the output layer to account for increased output channels.
-    Copies existing channel weights and initializes new channels with the mean of existing ones.
-    """
-    if new_sat_in_channels <= old_sat_in_channels:
-        return state_dict
-    
-    kpi_in_channels = 1  # from config
-    kpi_out_channels = 1  # from config
-    
-    for key in list(state_dict.keys()):
-        # Extend input conv layer (patch_embed.proj)
-        if 'jit.patch_embed.proj.weight' in key:
-            old_weight = state_dict[key]
-            new_weight = torch.zeros(
-                old_weight.shape[0],
-                new_sat_in_channels + kpi_in_channels,
-                *old_weight.shape[2:]
-            )
-            new_weight[:, :old_sat_in_channels + kpi_in_channels] = old_weight
-            new_weight[:, old_sat_in_channels + kpi_in_channels:] = old_weight[:, :1].mean(dim=1, keepdim=True)
-            state_dict[key] = new_weight
-            print(f"Transfer learning: extended {key} from {old_weight.shape} to {new_weight.shape}")
-        
-        # Extend output linear layer (final_layer.linear)
-        if 'jit.final_layer.linear.weight' in key:
-            old_weight = state_dict[key]
-            old_out_ch = old_sat_in_channels + kpi_out_channels  # 18
-            new_out_ch = new_sat_in_channels + kpi_out_channels  # 19
-            
-            patch_t, patch_h, patch_w = 1, 8, 8  # from config
-            old_feat = old_out_ch * patch_t * patch_h * patch_w   # 18 * 64 = 1152
-            new_feat = new_out_ch * patch_t * patch_h * patch_w   # 19 * 64 = 1216
-            
-            new_weight = torch.zeros(new_feat, old_weight.shape[1])
-            new_weight[:old_feat] = old_weight
-            # Initialize new output channel with ZEROS so old outputs remain unchanged
-            new_weight[old_feat:] = 0
-            state_dict[key] = new_weight
-            print(f"Transfer learning: extended {key} from {old_weight.shape} to {new_weight.shape}")
-    
-
-        # Extend output linear layer bias
-        if 'jit.final_layer.linear.bias' in key:
-            old_bias = state_dict[key]
-            old_out_ch = old_sat_in_channels + kpi_out_channels  # 18
-            new_out_ch = new_sat_in_channels + kpi_out_channels  # 19
-            
-            patch_t, patch_h, patch_w = 1, 8, 8
-            old_feat = old_out_ch * patch_t * patch_h * patch_w
-            new_feat = new_out_ch * patch_t * patch_h * patch_w
-            
-            new_bias = torch.zeros(new_feat)
-            new_bias[:old_feat] = old_bias
-            # Initialize new output channel bias with ZERO
-            new_bias[old_feat:] = 0
-            state_dict[key] = new_bias
-            print(f"Transfer learning: extended {key} from {old_bias.shape} to {new_bias.shape}")
-
-    return state_dict
-
-
 def main():
     # Parse command-line arguments
     parser = argparse.ArgumentParser(description="Train or export MeteoLibre model")
@@ -237,21 +173,13 @@ def main():
         # Create a list for Accelerate
         optimizer = [opt_muon, opt_adam]
     else:
-        model = DualUNet3DFiLM(**model_params)
-        optimizer = ForeachSOAP(model.parameters(), lr=learning_rate, foreach=False, warmup_steps=100)
+        exit()
 
     # model_path = "models_world_shortcut/model_v16_mtg_world_lightning_shortcut_e120.safetensors"
-    # #model_path = "models/epoch_15_mtg_meteofrance_.safetensors"
-    # state_dict = load_file(model_path)
-    
-    # #### Transfer learning: extend the first conv layer to accept +1 radar channel
-    # old_sat_in_channels = 17
-    # new_sat_in_channels = model_params["sat_in_channels"]  # 18
-    
-    # state_dict = extend_input_channels(state_dict, old_sat_in_channels, new_sat_in_channels)
-    # #### end transfert learning
+    model_path = "models/radar_finetune_v2_sigma0dot02.safetensors"
+    state_dict = load_file(model_path)
+    model.load_state_dict(state_dict)
 
-    # model.load_state_dict(state_dict)
     model, optimizer, dataloader = accelerator.prepare(model, optimizer, dataloader)
 
     if isinstance(optimizer, list):
@@ -307,6 +235,8 @@ def main():
                 total_loss += loss.item()
                 progress_bar.set_postfix(loss=loss.item())
 
+                break
+
         # Calculate average loss for the epoch
         avg_loss = total_loss / len(dataloader)
 
@@ -359,9 +289,13 @@ def main():
                 unwrapped_model = accelerator.unwrap_model(model)
                 # Save the EMA model's state dictionary
                 save_path = f"{MODEL_DIR}epoch_{epoch + 1}_mtg_meteofrance_.safetensors"
+                save_path_aot = f"{MODEL_DIR}model.so"
+
                 os.makedirs(MODEL_DIR, exist_ok=True)
+
                 save_file(unwrapped_model.state_dict(), save_path)
                 accelerator.print(f"Model saved to {save_path}")
+
 
         accelerator.wait_for_everyone()
 
@@ -372,63 +306,6 @@ def main():
         torch.save(model.state_dict(), "meteolibre_model_rectified_flow.pth")
         print("Training complete. Model saved to meteolibre_model_rectified_flow.pth")
 
-
-def export_torchscript(model_params: dict, weights_path: str, output_path: str = "model_scripted.pt", model_type: str = "jit"):
-    """
-    Export a trained model to TorchScript format for inference.
-    
-    Args:
-        model_params: Dictionary of model parameters (from config)
-        weights_path: Path to the .safetensors weights file
-        output_path: Output path for the TorchScript model
-        model_type: "jit" for DualJiT3D or "unet" for DualUNet3DFiLM
-    
-    Example usage:
-        model_params = config['model_v17_mtg_europe_lightning_radar_shortcut']["model"]
-        export_torchscript(model_params, "models/epoch_10_mtg_meteofrance_.safetensors", "model_scripted.pt")
-    """
-    from meteolibre_model.models.jit3d_dual_v2 import DualJiT3D
-    from meteolibre_model.models.dual_unet_film import DualUNet3DFiLM
-    
-    # Initialize model (same architecture as training)
-    if model_type == "jit":
-        model = DualJiT3D(**model_params)
-    else:
-        model = DualUNet3DFiLM(**model_params)
-    
-    # Load trained weights
-    state_dict = load_file(weights_path)
-    model.load_state_dict(state_dict)
-    model.eval()
-    
-    # Export to TorchScript
-    scripted = torch.jit.script(model)
-    scripted.save(output_path)
-    print(f"TorchScript model saved to {output_path}")
-    
-    return scripted
-
-
-# --- One-time export script (run locally or in a build step) ---
-# Usage: python train_rf_radar_extension_xpred.py --export path/to/weights.safetensors -o model_scripted.pt
-#        python train_rf_radar_extension_xpred.py --export path/to/weights.safetensors -o model_scripted.pt --model-type jit
-#
-# Or uncomment and modify the paths below to export a trained model to TorchScript format:
-#
-# if __name__ == "__main__":
-#     # Load config
-#     config_path = os.path.join(project_root, "meteolibre_model/config/configs.yml")
-#     with open(config_path) as f:
-#         config = yaml.safe_load(f)
-#     params = config['model_v17_mtg_europe_lightning_radar_shortcut']
-#     model_params = params["model"]
-#
-#     # Export the model (modify paths as needed)
-#     export_torchscript(
-#         model_params=model_params,
-#         weights_path="models/epoch_10_mtg_meteofrance_.safetensors",
-#         output_path="model_scripted.pt"
-#     )
 
 if __name__ == "__main__":
     main()
