@@ -71,11 +71,13 @@ def download_latest_h5(gcs_client, pattern: str = None) -> str:
     return str(local_path)
 
 
-def run_inference(data_path: str) -> str:
-    """Run inference on downloaded H5 file.
+def run_inference(data_path: str, gcs_client=None) -> str:
+    """Run inference on downloaded H5 file, uploading each TIFF as it is written.
 
     Args:
         data_path: Path to input H5 file
+        gcs_client: Optional GCPStorageClient used to upload files concurrently
+                    with GPU inference.
 
     Returns:
         Path to output directory
@@ -97,11 +99,24 @@ def run_inference(data_path: str) -> str:
         use_residual=config.model.use_residual
     )
 
+    upload_fn = None
+    if gcs_client is not None:
+        def upload_fn(filepath: str):
+            try:
+                filepath = Path(filepath)
+                date_str = filepath.stem.split("_")[1]
+                date_prefix = f"{date_str[:4]}-{date_str[4:6]}-{date_str[6:8]}"
+                dest_blob = f"{config.gcp.dest_prefix}/{date_prefix}/{filepath.name}"
+                gcs_client.upload_file(str(filepath), dest_blob)
+            except Exception:
+                logger.exception(f"Failed to upload {filepath}")
+
     result = engine.run_inference(
         data_path=data_path,
         output_dir=str(output_dir),
         forecast_steps=config.model.forecast_steps,
-        nb_forecast=config.model.nb_forecast
+        nb_forecast=config.model.nb_forecast,
+        upload_fn=upload_fn,
     )
 
     if result.status.value != "completed":
@@ -178,11 +193,10 @@ def process_date_pipeline(target_date: datetime) -> dict:
         pattern = target_date.strftime("%Y-%m-%d") + "_*.h5"
         data_path = download_latest_h5(gcs_client, pattern=pattern)
 
-        # Run inference
-        output_dir = run_inference(data_path)
-
-        # Upload results
-        uploaded = upload_results(output_dir, gcs_client)
+        # Run inference — each TIFF is uploaded to GCS as soon as it is written
+        output_dir = run_inference(data_path, gcs_client=gcs_client)
+        uploaded = list(Path(output_dir).glob("*.tiff"))
+        uploaded = [f.name for f in uploaded]
 
         end_time = datetime.now()
         duration = (end_time - start_time).total_seconds()

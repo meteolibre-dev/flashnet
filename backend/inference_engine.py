@@ -6,10 +6,11 @@ import os
 import sys
 import logging
 from pathlib import Path
-from typing import Optional, Dict, Any
+from typing import Optional, Dict, Any, Callable, Generator
 from datetime import datetime, timedelta
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from enum import Enum
+from concurrent.futures import ThreadPoolExecutor, Future
 
 import numpy as np
 import torch
@@ -342,7 +343,7 @@ class InferenceEngine:
         c_sat: int = 18,
         c_lightning: int = 1,
         c_radar: int = 1,
-    ) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
+    ) -> Generator[tuple[torch.Tensor, torch.Tensor, torch.Tensor], None, None]:
         """Run tiled inference for weather forecasting.
 
         Args:
@@ -356,7 +357,9 @@ class InferenceEngine:
             c_radar: Number of radar channels
 
         Returns:
-            List of saved output file paths.
+            Generator yielding (sat_batch, lightning_batch, radar_batch) CPU tensors
+            after each autoregressive step. sat_batch: (1, 2, nb, H, W),
+            lightning_batch: (1, 1, nb, H, W), radar_batch: (1, nb, H, W).
         """
         if self.model is None:
             raise RuntimeError("Model not loaded")
@@ -413,10 +416,6 @@ class InferenceEngine:
         c_radar = getattr(initial_context, 'c_radar', 1)
 
         d_const = 1.0 / self.denoising_steps
-        all_sat_forecasts = []
-        all_lightning_forecasts = []
-        all_radar_forecasts = []
-
         current_step = 0
         current_high_res_context = initial_context
 
@@ -572,10 +571,14 @@ class InferenceEngine:
             sat_denorm, lightning_denorm = denormalize(sat_frame, lightning_frame, self.device)
             # Radar is the last channel (index 17 = -1) of sat_denorm which includes elevation + radar
             radar_denorm = sat_denorm[:, -1, :, :]
-            all_sat_forecasts.append(sat_denorm[:, [0, 11], :, :].cpu())
-            all_lightning_forecasts.append(lightning_denorm.cpu())
-            all_radar_forecasts.append(radar_denorm.cpu())
+            sat_batch_cpu = sat_denorm[:, [0, 11], :, :].cpu()
+            lightning_batch_cpu = lightning_denorm.cpu()
+            radar_batch_cpu = radar_denorm.cpu()
             del sat_denorm, lightning_denorm
+
+            # Yield this step's results before updating context so the caller
+            # can dispatch I/O (write + upload) concurrently with the next GPU step.
+            yield sat_batch_cpu, lightning_batch_cpu, radar_batch_cpu
 
             # Update context for next autoregressive step
             T_ctx = self.context_frames
@@ -595,17 +598,86 @@ class InferenceEngine:
             x_t_full_res = torch.randn(1, C, nb_forecast, H_big, W_big, device=self.device)
             current_step += this_nb
 
-        sat_forecast = torch.cat(all_sat_forecasts, dim=2)
-        lightning_forecast = torch.cat(all_lightning_forecasts, dim=2)
-        radar_forecast = torch.cat(all_radar_forecasts, dim=1)
-        return sat_forecast, lightning_forecast, radar_forecast
+    def _save_timestep_files(
+        self,
+        sat_frame: torch.Tensor,
+        lightning_frame: torch.Tensor,
+        radar_frame: torch.Tensor,
+        output_dir: str,
+        pred_date: datetime,
+        geo_transform,
+        crs: str,
+        crop_range: slice,
+        upload_fn: Optional[Callable[[str], None]] = None,
+    ) -> list:
+        """Write TIFF files for one forecast timestep and optionally upload them.
+
+        This is designed to run in a background thread so GPU inference can
+        proceed concurrently.
+        """
+        base_filename = f"forecast_{pred_date.strftime('%Y%m%d%H%M')}"
+        saved = []
+
+        sat_np = self._fill_bad_pixels(sat_frame, CLIP_MIN).squeeze(0).numpy().astype(np.float32)
+        lightning_np = lightning_frame.squeeze(0).numpy().astype(np.float32)
+        radar_np = radar_frame.squeeze(0).squeeze(0).numpy().astype(np.float32)
+
+        sat_np[sat_np <= CLIP_MIN] = np.nan
+        lightning_np[lightning_np < 0.1] = -9999
+        radar_np[radar_np < 0] = np.nan
+
+        common_kwargs = dict(
+            driver='GTiff', crs=crs, transform=geo_transform,
+            compress='deflate', tiled=True, blockxsize=512, blockysize=512,
+        )
+
+        for ch in range(sat_np.shape[0]):
+            ch_path = os.path.join(output_dir, f"{base_filename}_sat_ch{ch}.tiff")
+            with rasterio.open(
+                ch_path, 'w', height=sat_np[ch, crop_range].shape[0],
+                width=sat_np[ch].shape[1], count=1, dtype=sat_np[ch].dtype,
+                nodata=np.nan, **common_kwargs,
+            ) as dst:
+                dst.write(sat_np[ch, crop_range], 1)
+            convert_to_cog(ch_path)
+            if upload_fn:
+                upload_fn(ch_path)
+            saved.append(ch_path)
+
+        lightning_path = os.path.join(output_dir, f"{base_filename}_lightning.tiff")
+        with rasterio.open(
+            lightning_path, 'w', height=lightning_np[0, crop_range].shape[0],
+            width=lightning_np[0].shape[1], count=1, dtype=lightning_np[0].dtype,
+            nodata=-9999, **common_kwargs,
+        ) as dst:
+            dst.write(lightning_np[0, crop_range], 1)
+        convert_to_cog(lightning_path)
+        if upload_fn:
+            upload_fn(lightning_path)
+        saved.append(lightning_path)
+
+        radar_path = os.path.join(output_dir, f"{base_filename}_radar.tiff")
+        with rasterio.open(
+            radar_path, 'w', height=radar_np[crop_range].shape[0],
+            width=radar_np.shape[1], count=1, dtype=radar_np.dtype,
+            nodata=np.nan, **common_kwargs,
+        ) as dst:
+            dst.write(radar_np[crop_range], 1)
+        convert_to_cog(radar_path)
+        if upload_fn:
+            upload_fn(radar_path)
+        saved.append(radar_path)
+
+        logger.info(f"Saved forecast to {base_filename}_*.tiff")
+        return saved
 
     def run_inference(
         self,
         data_path: str,
         output_dir: str,
         forecast_steps: int = 18,
-        nb_forecast: int = 3
+        nb_forecast: int = 3,
+        upload_fn: Optional[Callable[[str], None]] = None,
     ) -> InferenceResult:
         """Run full inference pipeline.
 
@@ -614,6 +686,8 @@ class InferenceEngine:
             output_dir: Directory to save outputs
             forecast_steps: Number of forecast steps
             nb_forecast: Frames per forecast batch
+            upload_fn: Optional callback called with each saved file path so that
+                       upload can run concurrently with GPU inference.
 
         Returns:
             InferenceResult with status and output information.
@@ -694,122 +768,47 @@ class InferenceEngine:
             current_high_res_context.c_lightning = c_lightning
             current_high_res_context.c_radar = c_radar
 
-            # Run inference
-            sat_forecast, lightning_forecast, radar_forecast = self.tiled_inference(
-                initial_context=current_high_res_context,
-                forecast_steps=forecast_steps,
-                nb_forecast=nb_forecast,
-                date=initial_date,
-            )
-
-            # Save results as TIFF files
-            output_files = []
+            # Geospatial metadata shared across all timesteps
             crop_start = 450
             crop_end = 2600
             crop_range = slice(crop_start, crop_end)
-            # Adjust the geospatial transform: shift lat_max by (crop_start * resolution)
             lat_max_shifted = 65.0 - (crop_start * 0.012)
+            geo_transform = rasterio.transform.from_origin(-10.0, lat_max_shifted, 0.012, 0.012)
+            crs = "EPSG:4326"
 
-            for k in range(sat_forecast.shape[2]):
-                sat_frame = sat_forecast[:, :, k, :, :]
-                # Fill bad pixels (<= CLIP_MIN) with neighbor average
-                sat_frame = self._fill_bad_pixels(sat_frame, CLIP_MIN)
-                
-                lightning_frame = lightning_forecast[:, :, k, :, :]
-                radar_frame = radar_forecast[:, k:k+1, :, :]
-                pred_date = initial_date + timedelta(minutes=10 * (k + 1))
-                base_filename = f"forecast_{pred_date.strftime('%Y%m%d%H%M')}"
+            # Drive the generator and dispatch I/O to a thread pool so that
+            # TIFF writing + COG conversion + GCS upload overlap with GPU inference.
+            output_files = []
+            pending_futures: list[Future] = []
+            global_step = 0
 
-                sat_np = sat_frame.squeeze(0).cpu().numpy().astype(np.float32)
-                lightning_np = lightning_frame.squeeze(0).cpu().numpy().astype(np.float32)
+            with ThreadPoolExecutor(max_workers=2) as executor:
+                for sat_batch, lightning_batch, radar_batch in self.tiled_inference(
+                    initial_context=current_high_res_context,
+                    forecast_steps=forecast_steps,
+                    nb_forecast=nb_forecast,
+                    date=initial_date,
+                ):
+                    batch_nb = sat_batch.shape[2]
+                    for k in range(batch_nb):
+                        pred_date = initial_date + timedelta(minutes=10 * (global_step + k + 1))
+                        sat_frame = sat_batch[:, :, k, :, :]
+                        lightning_frame = lightning_batch[:, :, k, :, :]
+                        radar_frame = radar_batch[:, k:k+1, :, :]  # (1, 1, H, W)
 
-                # Replace -4 with NaN for transparency/no-data
-                sat_np[sat_np <= CLIP_MIN] = np.nan
+                        fut = executor.submit(
+                            self._save_timestep_files,
+                            sat_frame, lightning_frame, radar_frame,
+                            output_dir, pred_date, geo_transform, crs,
+                            crop_range, upload_fn,
+                        )
+                        pending_futures.append(fut)
 
-                # Define geospatial metadata
-                # Europe region: lon_min=-10.0, lat_max shifted for crop, resolution=0.012
-                transform = rasterio.transform.from_origin(-10.0, lat_max_shifted, 0.012, 0.012)
-                crs = "EPSG:4326"
+                    global_step += batch_nb
 
-                for ch in range(sat_np.shape[0]):
-                    ch_path = os.path.join(output_dir, f"{base_filename}_sat_ch{ch}.tiff")
-                    with rasterio.open(
-                        ch_path,
-                        'w',
-                        driver='GTiff',
-                        height=sat_np[ch, crop_range].shape[0],
-                        width=sat_np[ch].shape[1],
-                        count=1,
-                        dtype=sat_np[ch].dtype,
-                        crs=crs,
-                        transform=transform,
-                        nodata=np.nan,
-                        compress='deflate',
-                        tiled=True,
-                        blockxsize=512,
-                        blockysize=512
-                    ) as dst:
-                        dst.write(sat_np[ch, crop_range], 1)
-                    output_files.append(ch_path)
-
-                    # Convert to COG for faster tile serving
-                    convert_to_cog(ch_path)
-
-                # lightning_np has shape (1, H, W), we need (H, W)
-                # Use -9999 as nodata instead of 0, since 0 is a valid data value
-                # First set values below threshold to nodata value
-                lightning_np[lightning_np < 0.1] = -9999
-                lightning_path = os.path.join(output_dir, f"{base_filename}_lightning.tiff")
-                with rasterio.open(
-                    lightning_path,
-                    'w',
-                    driver='GTiff',
-                    height=lightning_np[0, crop_range].shape[0],
-                    width=lightning_np[0].shape[1],
-                    count=1,
-                    dtype=lightning_np[0].dtype,
-                    crs=crs,
-                    transform=transform,
-                    nodata=-9999,
-                    compress='deflate',
-                    tiled=True,
-                    blockxsize=512,
-                    blockysize=512
-                ) as dst:
-                    dst.write(lightning_np[0, crop_range], 1)
-                output_files.append(lightning_path)
-
-                # Convert to COG for faster tile serving
-                convert_to_cog(lightning_path)
-
-                # Save radar forecast as TIFF (radar_forecast shape: (B, T, H, W))
-                radar_np = radar_frame.squeeze(0).squeeze(0).cpu().numpy().astype(np.float32)
-                # Replace very low values with NaN for transparency
-                radar_np[radar_np < 0] = np.nan
-                radar_path = os.path.join(output_dir, f"{base_filename}_radar.tiff")
-                with rasterio.open(
-                    radar_path,
-                    'w',
-                    driver='GTiff',
-                    height=radar_np[crop_range].shape[0],
-                    width=radar_np.shape[1],
-                    count=1,
-                    dtype=radar_np.dtype,
-                    crs=crs,
-                    transform=transform,
-                    nodata=np.nan,
-                    compress='deflate',
-                    tiled=True,
-                    blockxsize=512,
-                    blockysize=512
-                ) as dst:
-                    dst.write(radar_np[crop_range], 1)
-                output_files.append(radar_path)
-
-                # Convert to COG for faster tile serving
-                convert_to_cog(radar_path)
-
-                logger.info(f"Saved forecast to {base_filename}_*.tiff")
+                # Collect results (also re-raises any exception from a thread)
+                for fut in pending_futures:
+                    output_files.extend(fut.result())
 
             result.status = InferenceStatus.COMPLETED
             result.output_path = output_dir
