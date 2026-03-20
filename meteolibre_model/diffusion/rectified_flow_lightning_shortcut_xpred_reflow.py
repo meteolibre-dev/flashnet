@@ -29,6 +29,10 @@ from meteolibre_model.diffusion.utils import (
     STD_CHANNEL_WORLD,
     MEAN_LIGHTNING,
     STD_LIGHTNING,
+    MEAN_SAT_RESIDUAL,
+    STD_SAT_RESIDUAL,
+    MEAN_LIGHTNING_RESIDUAL,
+    STD_LIGHTNING_RESIDUAL,
 )
 
 # -- Parameters --
@@ -90,6 +94,20 @@ def denormalize(sat_data, lightning_data, device):
     return sat_data, lightning_data
 
 
+def normalize_residual(x0, c_sat, device):
+    """Normalize residual target (sat + lightning channels concatenated)."""
+    mean = torch.cat([MEAN_SAT_RESIDUAL, MEAN_LIGHTNING_RESIDUAL]).to(device).view(1, -1, 1, 1, 1)
+    std  = torch.cat([STD_SAT_RESIDUAL,  STD_LIGHTNING_RESIDUAL ]).to(device).view(1, -1, 1, 1, 1)
+    return (x0 - mean) / std
+
+
+def denormalize_residual(x0, c_sat, device):
+    """Denormalize residual back to normalized-data space."""
+    mean = torch.cat([MEAN_SAT_RESIDUAL, MEAN_LIGHTNING_RESIDUAL]).to(device).view(1, -1, 1, 1, 1)
+    std  = torch.cat([STD_SAT_RESIDUAL,  STD_LIGHTNING_RESIDUAL ]).to(device).view(1, -1, 1, 1, 1)
+    return x0 * std + mean
+
+
 def get_x_t_rf(x0, x1, t, interpolation="linear"):
     """
     Get the interpolated point x_t based on the chosen schedule.
@@ -129,6 +147,7 @@ def trainer_step(
 
     if use_residual:
         x0 = batch_data[:, :, model.context_frames:] - batch_data[:, :, model.context_frames-1:model.context_frames]
+        x0 = normalize_residual(x0, c_sat, device)
     else:
         x0 = batch_data[:, :, model.context_frames:]
 
@@ -254,6 +273,7 @@ def full_image_generation(
             t_val -= d_const
 
         if use_residual:
+            x_t = denormalize_residual(x_t, c_sat, device)
             x_t = x_t + last_context.expand_as(x_t)
 
         # keep clipped values from last context frame
