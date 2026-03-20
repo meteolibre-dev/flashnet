@@ -153,6 +153,11 @@ def trainer_step(
         # because x_context is a view of batch_data.
         x_context += torch.randn_like(x_context) * sigma * t_emp.view(num_emp,1,1,1,1)
 
+    # if sigma > 0:
+    #     # We add noise to the context, including the one used for residual if use_residual is True
+    #     # because x_context is a view of batch_data.
+    #     x_context = x_context * (1 - t_emp.view(num_emp,1,1,1,1) ** 5) + torch.randn_like(x_context) * t_emp.view(num_emp,1,1,1,1) ** 5
+
 
     xt_emp = get_x_t_rf(x0_emp, x1_emp, t_emp.view(num_emp,1,1,1,1), interpolation)
 
@@ -217,8 +222,10 @@ def full_image_generation(
 
         context_info = batch["spatial_position"].to(device)[0:nb_element]
 
-        batch_size, nb_channel, _, h, w = x_context.shape
+        batch_size, nb_channel, nb_context, h, w = x_context.shape
         x_t = torch.randn(batch_size, nb_channel, nb_forecasted_frame, h, w, device=device)
+
+        context_noise = torch.randn(batch_size, nb_channel, nb_context, h, w, device=device)
 
         d_const = 1.0 / steps
         t_val = 1.0
@@ -226,6 +233,9 @@ def full_image_generation(
         for _ in range(steps):
             t_batch = torch.full((batch_size,), t_val, device=device)
             d_batch = torch.full((batch_size,), 0., device=device)
+
+            # to comment if false
+            # x_context_t = x_context * (1 - t_batch.view(batch_size,1,1,1,1) ** 5) + context_noise * t_batch.view(batch_size,1,1,1,1) ** 5
 
             model_input = torch.cat([x_context, x_t], dim=2)
             context_global = torch.cat([context_info, t_batch.unsqueeze(1), d_batch.unsqueeze(1)], dim=1)
