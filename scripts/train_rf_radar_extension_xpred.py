@@ -39,7 +39,7 @@ from meteolibre_model.models.jit3d_dual_v2 import DualJiT3D
 config_path = os.path.join(project_root, "meteolibre_model/config/configs.yml")
 with open(config_path) as f:
     config = yaml.safe_load(f)
-params = config['model_v17_mtg_europe_lightning_radar_shortcut']
+params = config['model_v19_mtg_europe_lightning_radar_shortcut']
 
 
 def main():
@@ -62,7 +62,7 @@ def main():
 
     accelerator = Accelerator(
         mixed_precision="bf16",
-        gradient_accumulation_steps=2,
+        gradient_accumulation_steps=4,
         log_with="tensorboard",
         project_dir=".",
         kwargs_handlers=[kwargs],
