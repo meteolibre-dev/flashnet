@@ -254,6 +254,7 @@ def main():
                     batch,
                     device=accelerator.device,
                     parametrization=PARAMETRIZATION,
+                    interpolation=INTERPOLATION,
                     use_residual=residual
                 )
 

@@ -112,13 +112,12 @@ def get_x_t_rf(x0, x1, t, interpolation="linear"):
     """
     Get the interpolated point x_t based on the chosen schedule.
     - 'linear': x_t = (1 - t) * x0 + t * x1
-    - 'polynomial': x_t = (1 - t)^3 * x0 + (1 - (1 - t)^3) * x1
+    - 'polynomial': x_t = (1 - t^(1/2)) * x0 + t^(1/2) * x1
     """
     if interpolation == "linear":
         return (1 - t) * x0 + t * x1
     elif interpolation == "polynomial":
-        u = 1 - t
-        alpha = u**3
+        alpha = 1 - t ** 0.5
         return alpha * x0 + (1 - alpha) * x1
     else:
         raise ValueError(f"Unknown interpolation schedule: {interpolation}")
@@ -180,12 +179,12 @@ def trainer_step(
 
     xt_emp = get_x_t_rf(x0_emp, x1_emp, t_emp.view(num_emp,1,1,1,1), interpolation)
 
-    # da_dt for correct v-loss weighting (paper's 1/(1-t)² or 1/t² equivalent)
+    # da_dt for correct v-loss weighting
+    # alpha(t) = 1 - sqrt(t)  =>  da/dt = -1 / (2 * sqrt(t))
     if interpolation == "linear":
         da_dt = torch.full_like(t_emp, -1.0)
-    else:  # polynomial
-        u = 1 - t_emp
-        da_dt = -3 * u ** 2
+    else:  # polynomial: alpha(t) = 1 - t^(1/2)
+        da_dt = -0.5 / (t_emp ** 0.5 + 1e-8)
 
     da_dt = da_dt.view(num_emp, 1, 1, 1, 1)
 
@@ -202,7 +201,12 @@ def trainer_step(
     x_sat_pred_emp = sat_x_pred_emp[:, :, model.context_frames:]
     x_light_pred_emp = lightning_x_pred_emp[:, :, model.context_frames:]
 
-    weight = 1.0 / (t_emp.view(b,1,1,1,1) + 1e-2) ** 2
+    if interpolation == "polynomial":
+        # da/dt = -1/(2*sqrt(t))  =>  (da/dt)^2 ∝ 1/t
+        weight = 1.0 / (t_emp.view(b, 1, 1, 1, 1) + 1e-2)
+    else:
+        # linear: da/dt = -1  =>  empirical 1/t^2 upweighting of small t
+        weight = 1.0 / (t_emp.view(b, 1, 1, 1, 1) + 1e-2) ** 2
     weight = weight.clamp(0.9, 10.)
 
     # direct x-loss
@@ -217,6 +221,7 @@ def full_image_generation(
     steps=128,
     device="cuda",
     parametrization="standard",
+    interpolation="linear",
     nb_element=1,
     normalize_input=True,
     use_residual=True,
@@ -265,8 +270,13 @@ def full_image_generation(
 
             x_pred = torch.cat([sat_x_pred, lightning_x_pred], dim=1)[:, :, model.context_frames:]
 
-            # constant-velocity approximation used in self-consistency loss
-            s_theta = (x_t - x_pred) / t_val
+            # Euler step: x_{t-dt} = x_t - v(x_t, t) * dt
+            # For linear:     alpha(t) = 1 - t      => v = (x_t - x_pred) / t
+            # For polynomial: alpha(t) = 1 - sqrt(t) => v = (x_t - x_pred) / (2 * t)
+            if interpolation == "polynomial":
+                s_theta = (x_t - x_pred) / (2 * t_val + 1e-8)
+            else:
+                s_theta = (x_t - x_pred) / t_val
             x_t = x_t - s_theta * d_const
             x_t = x_t.clamp(-7, 7)
 
