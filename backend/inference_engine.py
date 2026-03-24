@@ -172,6 +172,7 @@ class InferenceEngine:
         batch_size: int = 64,
         context_frames: int = 4,
         use_residual: bool = False,
+        interpolation: str = "linear",
         device: Optional[str] = None
     ):
         """Initialize the inference engine.
@@ -193,6 +194,7 @@ class InferenceEngine:
         self.batch_size = batch_size
         self.context_frames = context_frames
         self.use_residual = use_residual
+        self.interpolation = interpolation
 
         if device is None:
             self.device = "cuda" if torch.cuda.is_available() else "cpu"
@@ -546,9 +548,13 @@ class InferenceEngine:
                 averaged_x_pred = aggregated_x_pred.float()
                 del aggregated_x_pred, weights_sum
 
-                # s_theta = (x_t - averaged_x_pred) / t
+                # s_theta = (x_t - averaged_x_pred) / t  (linear)
+                # s_theta = (x_t - averaged_x_pred) / (2 * t)  (polynomial)
                 # In-place update averaged_x_pred to become s_theta
-                averaged_x_pred.mul_(-1.0).add_(x_t_full_res).div_(t_val)
+                if self.interpolation == "polynomial":
+                    averaged_x_pred.mul_(-1.0).add_(x_t_full_res).div_(2 * t_val + 1e-8)
+                else:
+                    averaged_x_pred.mul_(-1.0).add_(x_t_full_res).div_(t_val)
                 
                 # x_t = x_t - s_theta * dt
                 x_t_full_res.sub_(averaged_x_pred, alpha=d_const)
