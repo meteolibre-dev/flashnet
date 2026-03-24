@@ -89,6 +89,8 @@ def run_inference(data_path: str, gcs_client=None) -> str:
     output_dir = Path(config.cache.cache_dir) / "output"
     output_dir.mkdir(parents=True, exist_ok=True)
 
+    logger.info("config model" + str(config.model))
+
     engine = InferenceEngine(
         model_path=config.model.model_path,
         model_type=config.model.model_type,
