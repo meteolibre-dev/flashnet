@@ -93,6 +93,7 @@ class Config(BaseModel):
                 nb_forecast=int(os.getenv("NB_FORECAST", 3)),
                 context_frames=int(os.getenv("CONTEXT_FRAMES", 4)),
                 use_residual=os.getenv("USE_RESIDUAL", "False").lower() == "true",
+                interpolation=os.getenv("INTERPOLATION", "linear"),
             ),
             server=ServerConfig(
                 host=os.getenv("SERVER_HOST", "0.0.0.0"),

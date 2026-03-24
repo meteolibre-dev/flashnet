@@ -96,7 +96,8 @@ def run_inference(data_path: str, gcs_client=None) -> str:
         denoising_steps=config.model.denoising_steps,
         batch_size=config.model.batch_size,
         context_frames=config.model.context_frames,
-        use_residual=config.model.use_residual
+        use_residual=config.model.use_residual,
+        interpolation=config.model.interpolation,
     )
 
     upload_fn = None
