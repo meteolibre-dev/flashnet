@@ -39,7 +39,7 @@ from meteolibre_model.models.jit3d_dual_v2 import DualJiT3D
 config_path = os.path.join(project_root, "meteolibre_model/config/configs.yml")
 with open(config_path) as f:
     config = yaml.safe_load(f)
-params = config['model_v20_mtg_europe_lightning_radar_shortcut']
+params = config['model_v17_mtg_europe_lightning_radar_shortcut']
 
 
 def main():
@@ -176,9 +176,9 @@ def main():
         exit()
 
     # model_path = "models_world_shortcut/model_v16_mtg_world_lightning_shortcut_e120.safetensors"
-    model_path = "models/radat_finetune_v6.safetensors"
-    state_dict = load_file(model_path)
-    model.load_state_dict(state_dict)
+    # model_path = "models/radar_finetune_v6_epoch171.safetensors"
+    # state_dict = load_file(model_path)
+    # model.load_state_dict(state_dict)
 
     model, optimizer, dataloader = accelerator.prepare(model, optimizer, dataloader)
 
@@ -252,6 +252,7 @@ def main():
                 generated_images, x_target = full_image_generation(
                     unwrapped_model,
                     batch,
+                    steps=16,
                     device=accelerator.device,
                     parametrization=PARAMETRIZATION,
                     interpolation=INTERPOLATION,

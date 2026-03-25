@@ -166,6 +166,10 @@ def trainer_step(
 
     t_emp = torch.rand(num_emp, device=device)
 
+    # log norm sampling for t
+    eps = torch.randn(num_emp, device=device)
+    t_emp = torch.sigmoid(0.4 + 1.2 * eps).clamp(1e-4, 1 - 1e-4)
+
     if sigma > 0:
         # We add noise to the context, including the one used for residual if use_residual is True
         # because x_context is a view of batch_data.
@@ -203,7 +207,7 @@ def trainer_step(
 
     if interpolation == "polynomial":
         # da/dt = -1/(2*sqrt(t))  =>  (da/dt)^2 ∝ 1/t
-        weight = 1.0 / (t_emp.view(b, 1, 1, 1, 1) + 1e-2)
+        weight = 1.0 / (t_emp.view(b,1,1,1,1) + 1e-2) ** 2
     else:
         # linear: da/dt = -1  =>  empirical 1/t^2 upweighting of small t
         weight = 1.0 / (t_emp.view(b, 1, 1, 1, 1) + 1e-2) ** 2
