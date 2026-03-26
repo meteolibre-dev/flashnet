@@ -293,7 +293,7 @@ def main():
 
                 os.makedirs(MODEL_DIR, exist_ok=True)
 
-                save_file(unwrapped_model.state_dict(), save_path)
+                save_file(unwrapped_model._orig_mod.state_dict(), save_path)
                 accelerator.print(f"Model saved to {save_path}")
 
 
