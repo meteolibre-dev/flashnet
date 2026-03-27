@@ -43,20 +43,7 @@ params = config['model_v21_mtg_europe_lightning_radar_shortcut']
 
 
 def main():
-    # Parse command-line arguments
-    parser = argparse.ArgumentParser(description="Train or export MeteoLibre model")
-    parser.add_argument("--export", type=str, help="Path to .safetensors weights file to export to TorchScript")
-    parser.add_argument("-o", "--output", type=str, default="model_scripted.pt", help="Output path for TorchScript model")
-    parser.add_argument("--model-type", type=str, default=None, help="Model type: 'jit' or 'unet' (defaults to config value)")
-    args = parser.parse_args()
-    
-    # If --export is provided, run export and exit
-    if args.export:
-        model_params = params["model"]
-        model_type = args.model_type if args.model_type else params.get("model_type", "jit")
-        export_torchscript(model_params, args.export, args.output, model_type)
-        return
-    
+
     # Initialize Accelerator with bfloat16 precision and logging
     kwargs = DistributedDataParallelKwargs(find_unused_parameters=True)
 
