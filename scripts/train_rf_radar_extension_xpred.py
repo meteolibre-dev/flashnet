@@ -39,7 +39,7 @@ from meteolibre_model.models.jit3d_dual_v2 import DualJiT3D
 config_path = os.path.join(project_root, "meteolibre_model/config/configs.yml")
 with open(config_path) as f:
     config = yaml.safe_load(f)
-params = config['model_v17_mtg_europe_lightning_radar_shortcut']
+params = config['model_v21_mtg_europe_lightning_radar_shortcut']
 
 
 def main():
@@ -289,11 +289,12 @@ def main():
                 unwrapped_model = accelerator.unwrap_model(model)
                 # Save the EMA model's state dictionary
                 save_path = f"{MODEL_DIR}epoch_{epoch + 1}_mtg_meteofrance_.safetensors"
-                save_path_aot = f"{MODEL_DIR}model.so"
 
                 os.makedirs(MODEL_DIR, exist_ok=True)
 
-                save_file(unwrapped_model._orig_mod.state_dict(), save_path)
+                model_to_save = getattr(unwrapped_model, '_orig_mod', unwrapped_model)
+
+                save_file(model_to_save.state_dict(), save_path)
                 accelerator.print(f"Model saved to {save_path}")
 
 
