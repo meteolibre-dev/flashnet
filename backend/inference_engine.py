@@ -272,7 +272,7 @@ class InferenceEngine:
 
         if self.model_type == "jit":
             self.model = DualJiT3D(**model_params)
-            self.model = torch.compile(self.model)
+            
         else:
             self.model = DualUNet3DFiLM(**model_params)
 
@@ -284,6 +284,9 @@ class InferenceEngine:
             logger.warning(f"Model weights not found at {self.model_path}. Using randomly initialized model.")
 
         self.model.to(self.device)
+
+        self.model = torch.compile(self.model)
+
         self.model.eval()
 
         logger.info(f"Model loaded successfully on {self.device}")
