@@ -523,6 +523,7 @@ class InferenceEngine:
                         spatial_position = torch.tensor(
                             [result["azimuth"], result["altitude"], result_noon["altitude"], lats[j] / 10.0],
                             device=self.device,
+                            dtype=torch.float32,
                         )
 
                         context_global = torch.cat(
