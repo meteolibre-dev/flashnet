@@ -312,8 +312,8 @@ class InferenceEngine:
                 from torchao.quantization import Float8WeightOnlyConfig
                 quantize_(self.model, Float8WeightOnlyConfig())
             elif self.quantization == "fp8_dynamic":
-                from torchao.quantization import Float8DynamicActivationFloat8WeightConfig, PerRow
-                quantize_(self.model, Float8DynamicActivationFloat8WeightConfig(granularity=PerRow()))
+                from torchao.quantization import Float8DynamicActivationFloat8WeightConfig, PerTensor
+                quantize_(self.model, Float8DynamicActivationFloat8WeightConfig(granularity=PerTensor()))
             elif self.quantization == "int8_weight_only":
                 from torchao.quantization import Int8WeightOnlyConfig
                 quantize_(self.model, Int8WeightOnlyConfig())
