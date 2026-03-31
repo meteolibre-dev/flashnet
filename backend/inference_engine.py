@@ -174,7 +174,7 @@ class InferenceEngine:
         use_residual: bool = False,
         interpolation: str = "linear",
         device: Optional[str] = None,
-        quantization: str = "fp8_dynamic",
+        quantization: str = "none",
     ):
         """Initialize the inference engine.
 
