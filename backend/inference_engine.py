@@ -173,7 +173,8 @@ class InferenceEngine:
         context_frames: int = 4,
         use_residual: bool = False,
         interpolation: str = "linear",
-        device: Optional[str] = None
+        device: Optional[str] = None,
+        quantization: str = "fp8_dynamic",
     ):
         """Initialize the inference engine.
 
@@ -186,6 +187,8 @@ class InferenceEngine:
             context_frames: Number of context frames
             use_residual: Whether to use residual connections
             device: Device to run inference on (auto-detected if None)
+            quantization: torchao quantization scheme ("none" | "fp8_weight_only" |
+                          "fp8_dynamic" | "int8_weight_only" | "int8_dynamic")
         """
         self.model_path = model_path
         self.model_type = model_type
@@ -195,6 +198,7 @@ class InferenceEngine:
         self.context_frames = context_frames
         self.use_residual = use_residual
         self.interpolation = interpolation
+        self.quantization = quantization
 
         if device is None:
             self.device = "cuda" if torch.cuda.is_available() else "cpu"
@@ -284,12 +288,46 @@ class InferenceEngine:
             logger.warning(f"Model weights not found at {self.model_path}. Using randomly initialized model.")
 
         self.model.to(self.device)
+        self.model.eval()
+
+        self._apply_quantization()
 
         self.model = torch.compile(self.model)
 
-        self.model.eval()
-
         logger.info(f"Model loaded successfully on {self.device}")
+
+    def _apply_quantization(self) -> None:
+        """Apply torchao quantization to the model weights/activations.
+
+        Requires torchao>=0.14.0. FP8 schemes require CUDA SM>=8.9 (Ada Lovelace / Hopper / Blackwell).
+        """
+        if self.quantization == "none" or self.device == "cpu":
+            return
+
+        try:
+            from torchao.quantization import quantize_
+
+            if self.quantization == "fp8_weight_only":
+                from torchao.quantization import Float8WeightOnlyConfig
+                quantize_(self.model, Float8WeightOnlyConfig())
+            elif self.quantization == "fp8_dynamic":
+                from torchao.quantization import Float8DynamicActivationFloat8WeightConfig
+                quantize_(self.model, Float8DynamicActivationFloat8WeightConfig())
+            elif self.quantization == "int8_weight_only":
+                from torchao.quantization import Int8WeightOnlyConfig
+                quantize_(self.model, Int8WeightOnlyConfig())
+            elif self.quantization == "int8_dynamic":
+                from torchao.quantization import Int8DynamicActivationInt8WeightConfig
+                quantize_(self.model, Int8DynamicActivationInt8WeightConfig())
+            else:
+                logger.warning(f"Unknown quantization scheme '{self.quantization}', skipping.")
+                return
+
+            logger.info(f"Applied torchao quantization: {self.quantization}")
+        except ImportError:
+            logger.warning("torchao not installed — skipping quantization. Install with: pip install 'torchao>=0.14.0'")
+        except Exception as e:
+            logger.warning(f"Quantization failed ({e}), continuing without quantization.")
 
     def _extract_patch(self, image: torch.Tensor, x: int, y: int, patch_size: int) -> torch.Tensor:
         """Extract a patch from an image."""

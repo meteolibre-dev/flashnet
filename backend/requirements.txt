@@ -33,6 +33,9 @@ rio-cogeo>=5.0.0
 # ML inference (already in main requirements)
 # torch>=2.1.0
 
+# Quantization (FP8/INT8 for Blackwell and Ada Lovelace GPUs)
+torchao>=0.14.0
+
 # Testing
 pytest>=7.4.0
 pytest-asyncio>=0.23.0
