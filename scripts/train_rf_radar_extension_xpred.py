@@ -49,7 +49,7 @@ def main():
 
     accelerator = Accelerator(
         mixed_precision="bf16",
-        gradient_accumulation_steps=2,
+        gradient_accumulation_steps=4,
         log_with="tensorboard",
         project_dir=".",
         kwargs_handlers=[kwargs],
