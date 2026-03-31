@@ -38,7 +38,7 @@ class ModelConfig(BaseModel):
     use_residual: bool = False
     parametrization: str = "standard"
     interpolation: str = "linear"
-    quantization: str = "fp8_dynamic"  # "none" | "fp8_weight_only" | "fp8_dynamic" | "int8_weight_only" | "int8_dynamic"
+    quantization: str = "none"  # "none" | "fp8_weight_only" | "fp8_dynamic" | "int8_weight_only" | "int8_dynamic"
 
 
 class ServerConfig(BaseModel):
