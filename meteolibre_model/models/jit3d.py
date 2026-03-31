@@ -151,6 +151,7 @@ class JiTBlock(nn.Module):
         
         self.norm2 = RMSNorm(dim)
         hidden_dim = int(dim * mlp_ratio)
+        hidden_dim = (hidden_dim + 15) // 16 * 16  # round up to multiple of 16 for FP8 compatibility
         self.mlp = SwiGLU(dim, hidden_dim, dim)
 
     def forward(self, x, rope_module, T, H, W):
