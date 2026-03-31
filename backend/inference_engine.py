@@ -288,6 +288,7 @@ class InferenceEngine:
             logger.warning(f"Model weights not found at {self.model_path}. Using randomly initialized model.")
 
         self.model.to(self.device)
+        self.model.to(torch.bfloat16)
         self.model.eval()
 
         self._apply_quantization()
