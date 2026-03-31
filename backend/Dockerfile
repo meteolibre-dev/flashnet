@@ -26,12 +26,12 @@ COPY backend/requirements.txt ./backend/
 
 # Install Python dependencies
 # Upgrade pip first to avoid issues with older versions
-RUN pip install --no-cache-dir --upgrade pip && \
-    pip install --no-cache-dir -r backend/requirements.txt
+RUN pip install --no-cache-dir --break-system-packages --upgrade pip && \
+    pip install --no-cache-dir --break-system-packages -r backend/requirements.txt
 
 # Copy and install the local meteolibre-model package
 COPY meteolibre_model/ ./meteolibre_model/
-RUN pip install --no-cache-dir -e .
+RUN pip install --no-cache-dir --break-system-packages -e .
 
 # Copy the rest of the backend application
 COPY backend/ ./backend/
