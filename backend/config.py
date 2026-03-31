@@ -95,7 +95,7 @@ class Config(BaseModel):
                 context_frames=int(os.getenv("CONTEXT_FRAMES", 4)),
                 use_residual=os.getenv("USE_RESIDUAL", "False").lower() == "true",
                 interpolation=os.getenv("INTERPOLATION", "linear"),
-                quantization=os.getenv("QUANTIZATION", "fp8_dynamic"),
+                quantization=os.getenv("QUANTIZATION", "none"),
             ),
             server=ServerConfig(
                 host=os.getenv("SERVER_HOST", "0.0.0.0"),
