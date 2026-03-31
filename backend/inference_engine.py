@@ -551,9 +551,9 @@ class InferenceEngine:
 
                     with torch.autocast("cuda", dtype=torch.bfloat16):
                         sat_pred_batch, lightning_pred_batch = self.model(
-                            model_input_sat.float(),
-                            model_input_lightning.float(),
-                            torch.cat(context_global_batch, dim=0).float(),
+                            model_input_sat,
+                            model_input_lightning,
+                            torch.cat(context_global_batch, dim=0),
                         )
 
                     del model_input, model_input_sat, model_input_lightning, context_global_batch, patch_x_t_batch, patch_context_batch
