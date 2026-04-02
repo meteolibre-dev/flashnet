@@ -421,7 +421,7 @@ class InferenceEngine:
         c_lightning = getattr(initial_context, 'c_lightning', 1)
         c_radar = getattr(initial_context, 'c_radar', 1)
 
-        d_const = 1.0 / self.denoising_steps
+        half_steps = self.denoising_steps // 2
         current_step = 0
         current_high_res_context = initial_context
 
@@ -446,7 +446,14 @@ class InferenceEngine:
                     1, 1, this_nb, H_big, W_big, device=self.device, dtype=torch.bfloat16
                 )
 
-                t_val = 1.0 - i * d_const
+                # Non-uniform schedule: spend half the steps in [1.0, 0.9]
+                # and the other half in [0.9, 0.0].
+                if i < half_steps:
+                    t_val = 1.0 - i * (0.1 / half_steps)
+                    dt = 0.1 / half_steps
+                else:
+                    t_val = 0.9 - (i - half_steps) * (0.9 / half_steps)
+                    dt = 0.9 / half_steps
                 t_batch_val = torch.full((1,), t_val, device=self.device)
                 d_batch_val = torch.full((1,), 0, device=self.device)
 
@@ -561,7 +568,7 @@ class InferenceEngine:
                     averaged_x_pred.mul_(-1.0).add_(x_t_full_res).div_(t_val)
                 
                 # x_t = x_t - s_theta * dt
-                x_t_full_res.sub_(averaged_x_pred, alpha=d_const)
+                x_t_full_res.sub_(averaged_x_pred, alpha=dt)
                 x_t_full_res.clamp_(-7, 7)
                 
                 del averaged_x_pred
