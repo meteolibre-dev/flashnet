@@ -167,8 +167,8 @@ def trainer_step(
     t_emp = torch.rand(num_emp, device=device)
 
     # log norm sampling for t
-    # eps = torch.randn(num_emp, device=device)
-    # t_emp = torch.sigmoid(0.4 + 1.2 * eps).clamp(1e-4, 1 - 1e-4)
+    eps = torch.randn(num_emp, device=device)
+    t_emp = torch.sigmoid(1.5 + 1.8 * eps).clamp(1e-4, 1 - 1e-4)
 
     # progressive noise
     if sigma > 0:
@@ -190,7 +190,7 @@ def trainer_step(
     #     frame_weights = frame_weights.view(1, 1, n_ctx, 1, 1)
     #     x_context += torch.randn_like(x_context) * sigma * frame_weights
 
-    #     xt_emp = get_x_t_rf(x0_emp, x1_emp, t_emp.view(num_emp,1,1,1,1), interpolation)
+    xt_emp = get_x_t_rf(x0_emp, x1_emp, t_emp.view(num_emp,1,1,1,1), interpolation)
 
     # da_dt for correct v-loss weighting
     # alpha(t) = 1 - sqrt(t)  =>  da/dt = -1 / (2 * sqrt(t))
