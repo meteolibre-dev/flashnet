@@ -171,16 +171,16 @@ def trainer_step(
     # t_emp = torch.sigmoid(0.4 + 1.2 * eps).clamp(1e-4, 1 - 1e-4)
 
     # progressive noise
-    # if sigma > 0:
-    #     # We add noise to the context, including the one used for residual if use_residual is True
-    #     # because x_context is a view of batch_data.
-    #     x_context += torch.randn_like(x_context) * sigma * t_emp.view(num_emp,1,1,1,1)
-
-    # uniform noise schedule
     if sigma > 0:
         # We add noise to the context, including the one used for residual if use_residual is True
         # because x_context is a view of batch_data.
-        x_context = x_context * (1 - t_emp.view(num_emp,1,1,1,1) ** 5) + torch.randn_like(x_context) * t_emp.view(num_emp,1,1,1,1) ** 5
+        x_context += torch.randn_like(x_context) * sigma * t_emp.view(num_emp,1,1,1,1)
+
+    # uniform noise schedule
+    # if sigma > 0:
+    #     # We add noise to the context, including the one used for residual if use_residual is True
+    #     # because x_context is a view of batch_data.
+    #     x_context = x_context * (1 - t_emp.view(num_emp,1,1,1,1) ** 5) + torch.randn_like(x_context) * t_emp.view(num_emp,1,1,1,1) ** 5
 
     # noise weighting with frame age
     # if sigma > 0:
