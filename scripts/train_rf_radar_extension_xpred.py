@@ -39,7 +39,7 @@ from meteolibre_model.models.jit3d_dual_v2 import DualJiT3D
 config_path = os.path.join(project_root, "meteolibre_model/config/configs.yml")
 with open(config_path) as f:
     config = yaml.safe_load(f)
-params = config['model_v21_mtg_europe_lightning_radar_shortcut']
+params = config['model_v22_mtg_europe_lightning_radar_shortcut']
 
 
 def main():
