@@ -177,20 +177,20 @@ def trainer_step(
     #     x_context += torch.randn_like(x_context) * sigma * t_emp.view(num_emp,1,1,1,1)
 
     # uniform noise schedule
-    # if sigma > 0:
-    #     # We add noise to the context, including the one used for residual if use_residual is True
-    #     # because x_context is a view of batch_data.
-    #     x_context = x_context * (1 - t_emp.view(num_emp,1,1,1,1) ** 5) + torch.randn_like(x_context) * t_emp.view(num_emp,1,1,1,1) ** 5
+    if sigma > 0:
+        # We add noise to the context, including the one used for residual if use_residual is True
+        # because x_context is a view of batch_data.
+        x_context = x_context * (1 - t_emp.view(num_emp,1,1,1,1) ** 5) + torch.randn_like(x_context) * t_emp.view(num_emp,1,1,1,1) ** 5
 
     # noise weighting with frame age
-    if sigma > 0:
-        n_ctx = x_context.shape[2]
-        # Linearly increasing corruption: oldest frame gets least, newest gets most
-        frame_weights = torch.linspace(0.1, 1.0, n_ctx, device=device)
-        frame_weights = frame_weights.view(1, 1, n_ctx, 1, 1)
-        x_context += torch.randn_like(x_context) * sigma * frame_weights
+    # if sigma > 0:
+    #     n_ctx = x_context.shape[2]
+    #     # Linearly increasing corruption: oldest frame gets least, newest gets most
+    #     frame_weights = torch.linspace(0.1, 1.0, n_ctx, device=device)
+    #     frame_weights = frame_weights.view(1, 1, n_ctx, 1, 1)
+    #     x_context += torch.randn_like(x_context) * sigma * frame_weights
 
-        xt_emp = get_x_t_rf(x0_emp, x1_emp, t_emp.view(num_emp,1,1,1,1), interpolation)
+    #     xt_emp = get_x_t_rf(x0_emp, x1_emp, t_emp.view(num_emp,1,1,1,1), interpolation)
 
     # da_dt for correct v-loss weighting
     # alpha(t) = 1 - sqrt(t)  =>  da/dt = -1 / (2 * sqrt(t))
