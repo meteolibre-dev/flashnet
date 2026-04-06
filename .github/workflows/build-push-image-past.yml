@@ -1,0 +1,65 @@
+name: Build and Push Docker Image (Past)
+
+on:
+  push:
+    branches:
+      - main
+    paths:
+      - 'backend/**'
+      - 'meteolibre_model/**'
+      - '.github/workflows/build-push-image-past.yml'
+  workflow_dispatch:
+
+env:
+  PROJECT_ID: meteoforecast
+  GAR_LOCATION: europe-west4
+  SERVICE: flashnet-backend-past
+  REPOSITORY: flashnet-repo
+  IMAGE_NAME: flashnet-backend-past
+  DOCKERFILE: backend/Dockerfile
+
+jobs:
+  build-and-push:
+    name: Build and Push Image (Past)
+    runs-on: ubuntu-latest
+    permissions:
+      contents: 'read'
+      id-token: 'write'
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Google Auth
+        id: auth
+        uses: 'google-github-actions/auth@v2'
+        with:
+          credentials_json: '${{ secrets.GCP_CREDENTIALS }}'
+
+      - name: 'Set up Cloud SDK'
+        uses: 'google-github-actions/setup-gcloud@v2'
+
+      - name: 'Docker Auth'
+        run: 'gcloud auth configure-docker ${{ env.GAR_LOCATION }}-docker.pkg.dev --quiet'
+
+      - name: Get Short Git SHA
+        id: git-sha
+        run: echo "SHORT_SHA=$(git rev-parse --short HEAD)" >> $GITHUB_OUTPUT
+
+      - name: 'Build Container Image'
+        run: |
+          docker build \
+            --file ${{ env.DOCKERFILE }} \
+            --tag ${{ env.GAR_LOCATION }}-docker.pkg.dev/${{ env.PROJECT_ID }}/${{ env.REPOSITORY }}/${{ env.IMAGE_NAME }}:${{ steps.git-sha.outputs.SHORT_SHA }} \
+            --tag ${{ env.GAR_LOCATION }}-docker.pkg.dev/${{ env.PROJECT_ID }}/${{ env.REPOSITORY }}/${{ env.IMAGE_NAME }}:latest \
+            .
+
+      - name: 'Push Container Image'
+        run: |
+          docker push ${{ env.GAR_LOCATION }}-docker.pkg.dev/${{ env.PROJECT_ID }}/${{ env.REPOSITORY }}/${{ env.IMAGE_NAME }}:${{ steps.git-sha.outputs.SHORT_SHA }}
+          docker push ${{ env.GAR_LOCATION }}-docker.pkg.dev/${{ env.PROJECT_ID }}/${{ env.REPOSITORY }}/${{ env.IMAGE_NAME }}:latest
+
+      - name: Output Image URI
+        id: output
+        run: |
+          echo "IMAGE_URI=${{ env.GAR_LOCATION }}-docker.pkg.dev/${{ env.PROJECT_ID }}/${{ env.REPOSITORY }}/${{ env.IMAGE_NAME }}:${{ steps.git-sha.outputs.SHORT_SHA }}" >> $GITHUB_OUTPUT
+          echo "Image built and pushed successfully!"
