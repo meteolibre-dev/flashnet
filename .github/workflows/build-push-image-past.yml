@@ -1,13 +1,6 @@
 name: Build and Push Docker Image (Past)
 
 on:
-  push:
-    branches:
-      - main
-    paths:
-      - 'backend/**'
-      - 'meteolibre_model/**'
-      - '.github/workflows/build-push-image-past.yml'
   workflow_dispatch:
 
 env:
