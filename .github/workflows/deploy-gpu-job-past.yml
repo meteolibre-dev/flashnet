@@ -62,7 +62,7 @@ jobs:
             --gpu 1 \
             --gpu-type nvidia-rtx-pro-6000 \
             --no-gpu-zonal-redundancy \
-            --set-env-vars "MODE=cli,LOG_LEVEL=INFO,GCP_SOURCE_PREFIX=inference_h5_past" \
+            --set-env-vars "MODE=cli,LOG_LEVEL=INFO,GCP_SOURCE_PREFIX=inference_h5_past,BACKTEST_MODE=true" \
             --set-secrets "GCP_CREDENTIALS=GCP-CREDENTIALS-SECRET:latest" \
             --task-timeout 3600 \
             --max-retries 0 \
