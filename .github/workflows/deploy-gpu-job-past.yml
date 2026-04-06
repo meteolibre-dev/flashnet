@@ -12,10 +12,10 @@ on:
 env:
   PROJECT_ID: meteoforecast
   GAR_LOCATION: europe-west4
-  SERVICE: flashnet-backend
+  SERVICE: flashnet-backend-past
   REPOSITORY: flashnet-repo
   JOB_NAME: flashnet-backend-gpu-job-past
-  IMAGE_NAME: flashnet-backend
+  IMAGE_NAME: flashnet-backend-past
 
 jobs:
   deploy-cloud-run-gpu-job:
