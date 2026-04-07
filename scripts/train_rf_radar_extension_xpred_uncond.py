@@ -122,14 +122,21 @@ def main():
     if params["model_type"] == "jit":
         print("Jit model")
         model = DualJiT3D(**model_params)
+        
+        model_path = "models/model_radar.safetensors"
+        state_dict = load_file(model_path)
+        model.load_state_dict(state_dict)
+        
         model = torch.compile(model)
-
         muon_params, adamw_params = get_grouped_params(model)
         opt_muon = Muon(muon_params, lr=learning_rate, momentum=0.95, weight_decay=0.1)
         opt_adam = torch.optim.AdamW(adamw_params, lr=learning_rate / 3, weight_decay=0.01)
         optimizer = [opt_muon, opt_adam]
     else:
         exit()
+        
+        
+        
 
     model, optimizer, dataloader = accelerator.prepare(model, optimizer, dataloader)
 
@@ -150,7 +157,7 @@ def main():
         for batch in progress_bar:
 
             with accelerator.accumulate(model):
-                loss, loss_sat, loss_kpi = trainer_step(
+                loss, loss_sat, loss_kpi, loss_lap = trainer_step(
                     model, batch, device,
                     parametrization=PARAMETRIZATION,
                     interpolation=INTERPOLATION,
@@ -170,6 +177,8 @@ def main():
                         accelerator.log({"Loss/train_trained": loss.item()}, step=global_step)
                         accelerator.log({"Loss_sat/train_trained": loss_sat.item()}, step=global_step)
                         accelerator.log({"Loss_kpi/train_trained": loss_kpi.item()}, step=global_step)
+                        accelerator.log({"Loss_lap/train_trained": loss_lap.item()}, step=global_step)
+
 
                 total_loss += loss.item()
                 progress_bar.set_postfix(loss=loss.item())
@@ -190,8 +199,8 @@ def main():
                     interpolation=INTERPOLATION,
                 )
 
-                generated_sample = generated_images[0, 17]
-                target_sample = x_target[0, 17].cpu()
+                generated_sample = generated_images[0, 11]
+                target_sample = x_target[0, 11].cpu()
 
                 all_frames = torch.cat([generated_sample, target_sample], dim=0) / 8.0
                 all_frames = all_frames.clamp(-10, 10)

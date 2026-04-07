@@ -5,6 +5,8 @@ https://arxiv.org/pdf/2410.12557
 """
 
 import torch
+import torch.nn.functional as F
+
 
 try:
     import matplotlib
@@ -62,33 +64,51 @@ def get_x_t_rf(x0, x1, t, interpolation="linear"):
     else:
         raise ValueError(f"Unknown interpolation schedule: {interpolation}")
 
+def laplacian_loss(pred: torch.Tensor, target: torch.Tensor) -> torch.Tensor:
+    """
+    pred, target: (B, C, T, H, W)
+    Applies depthwise Laplacian over H, W for each (B, C, T) slice.
+    """
+    b, c, t, h, w = pred.shape
+    # merge B and T into batch dim for 2D conv
+    pred_2d   = pred.permute(0, 2, 1, 3, 4).reshape(b * t, c, h, w)
+    target_2d = target.permute(0, 2, 1, 3, 4).reshape(b * t, c, h, w)
+
+    kernel = torch.tensor(
+        [[0.,  1., 0.],
+         [1., -4., 1.],
+         [0.,  1., 0.]], device=pred.device
+    ).view(1, 1, 3, 3).expand(c, 1, 3, 3)
+
+    lap_pred   = F.conv2d(pred_2d,   kernel, padding=1, groups=c)
+    lap_target = F.conv2d(target_2d, kernel, padding=1, groups=c)
+
+    return F.l1_loss(lap_pred, lap_target)
+
 
 def trainer_step(
-    model, batch, device, sigma=0.0, parametrization="standard", interpolation="linear"
+    model, batch, device, sigma=0.0, parametrization="standard", interpolation="linear",
+    lambda_lap: float = 0.1,
 ):
+
     if parametrization != "standard":
         raise ValueError("Only 'standard' parametrization is supported for x-prediction.")
 
-    # (B, C, T, H, W)
     sat_data = batch["sat_patch_data"].permute(0, 2, 1, 3, 4)
     lightning_data = batch["lightning_patch_data"].permute(0, 2, 1, 3, 4)
 
     b, c_sat, t_dim, h, w = sat_data.shape
 
     mask_data_sat = sat_data != CLIP_MIN
-
     sat_data, lightning_data = normalize(sat_data, lightning_data, device)
     batch_data = torch.cat([sat_data, lightning_data], dim=1)
 
-    # Unconditional: target is ALL frames (no split into context / forecast)
     x0 = batch_data[:, :, model.context_frames:]
     mask_emp = mask_data_sat[:, :, model.context_frames:]
 
     context_info = batch["spatial_position"]
     x1 = torch.randn_like(x0)
-
     t_emp = torch.rand(b, device=device)
-
     xt_emp = get_x_t_rf(x0, x1, t_emp.view(b, 1, 1, 1, 1), interpolation)
 
     if interpolation == "linear":
@@ -97,7 +117,6 @@ def trainer_step(
         da_dt = -0.5 / (t_emp ** 0.5 + 1e-8)
     da_dt = da_dt.view(b, 1, 1, 1, 1)
 
-    # Unconditional: model receives only the noisy target frames (no context prepended)
     context_global_emp = torch.cat(
         [context_info, t_emp.unsqueeze(1), torch.zeros_like(t_emp).unsqueeze(1)], dim=1
     )
@@ -108,18 +127,31 @@ def trainer_step(
         context_global_emp.float(),
     )
 
-    # No slicing needed — output shape matches target shape directly
-    x_sat_pred_emp = sat_x_pred_emp
+    x_sat_pred_emp   = sat_x_pred_emp
     x_light_pred_emp = lightning_x_pred_emp
 
     weight = 1.0 / (t_emp.view(b, 1, 1, 1, 1) + 1e-2) ** 2
-    weight = weight.clamp(0.9, 10.0)
+    weight = weight.clamp(0.9, 5.0)
 
-    loss_sat = (weight * (x_sat_pred_emp - x0[:, :c_sat]) ** 2)[mask_emp].mean()
+    loss_sat       = (weight * (x_sat_pred_emp   - x0[:, :c_sat]) ** 2)[mask_emp].mean()
     loss_lightning = (weight * (x_light_pred_emp - x0[:, c_sat:]) ** 2).mean()
 
-    return loss_sat + 5.0 * loss_lightning, loss_sat, loss_lightning
+    # --- Laplacian loss (gated to low-t only: detail refinement regime) ---
+    low_t_mask = (t_emp < 0.5).float().view(b, 1, 1, 1, 1)
 
+    loss_lap_sat       = laplacian_loss(
+        x_sat_pred_emp   * low_t_mask,
+        x0[:, :c_sat]    * low_t_mask,
+    )
+    loss_lap_lightning = laplacian_loss(
+        x_light_pred_emp * low_t_mask,
+        x0[:, c_sat:]    * low_t_mask,
+    )
+    loss_lap = loss_lap_sat + 1.0 * loss_lap_lightning
+
+    total_loss = loss_sat + 5.0 * loss_lightning + lambda_lap * loss_lap
+
+    return total_loss, loss_sat, loss_lightning, loss_lap
 
 def full_image_generation(
     model,

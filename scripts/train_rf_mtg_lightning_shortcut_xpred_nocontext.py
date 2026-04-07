@@ -127,7 +127,7 @@ def main():
 
             # Perform training step
             with accelerator.accumulate(model):
-                loss, loss_sat, loss_kpi = trainer_step(
+                loss, loss_sat, loss_kpi, loss_lap = trainer_step(
                     model, batch, device, parametrization=PARAMETRIZATION, interpolation=INTERPOLATION, sigma=sigma_noise_input, use_residual=residual
                 )
 
@@ -155,6 +155,11 @@ def main():
 
                         accelerator.log(
                             {"Loss_kpi/train_trained": loss_kpi.item()},
+                            step=global_step,
+                        )
+                        
+                        accelerator.log(
+                            {"Loss_lap/train_trained": loss_lap.item()},
                             step=global_step,
                         )
 
