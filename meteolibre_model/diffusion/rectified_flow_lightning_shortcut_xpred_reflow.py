@@ -167,14 +167,15 @@ def trainer_step(
     t_emp = torch.rand(num_emp, device=device)
 
     # log norm sampling for t
-    eps = torch.randn(num_emp, device=device)
-    t_emp = torch.sigmoid(1.3 + 1.5 * eps).clamp(1e-4, 1 - 1e-4)
+    # eps = torch.randn(num_emp, device=device)
+    # t_emp = torch.sigmoid(1.3 + 1.5 * eps).clamp(1e-4, 1 - 1e-4)
 
     # progressive noise
     if sigma > 0:
         # We add noise to the context, including the one used for residual if use_residual is True
         # because x_context is a view of batch_data.
-        x_context_t = x_context * (1. - t_emp.view(num_emp,1,1,1,1) ** 2) + torch.randn_like(x_context) * t_emp.view(num_emp,1,1,1,1) ** 2
+        context_noise = torch.randn_like(x_context)
+        x_context_t = x_context * (1. - t_emp.view(b,1,1,1,1)) ** (0.5) + context_noise * (1. - (1 - t_emp.view(b,1,1,1,1)) ** (0.5)) 
 
     # uniform noise schedule
     # if sigma > 0:
@@ -272,7 +273,7 @@ def full_image_generation(
             d_batch = torch.full((batch_size,), 0., device=device)
 
             # to comment if false
-            x_context_t = x_context * (1 - t_batch.view(batch_size,1,1,1,1) ** 2) + context_noise * t_batch.view(batch_size,1,1,1,1) ** 2
+            x_context_t = x_context * (1 - t_batch.view(batch_size,1,1,1,1)) ** (0.5) + context_noise * (1. - (1 - t_batch.view(batch_size,1,1,1,1)) ** (0.5)) 
 
             model_input = torch.cat([x_context_t, x_t], dim=2)
             context_global = torch.cat([context_info, t_batch.unsqueeze(1), d_batch.unsqueeze(1)], dim=1)
