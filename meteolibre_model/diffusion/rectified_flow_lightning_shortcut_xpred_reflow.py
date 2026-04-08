@@ -174,7 +174,7 @@ def trainer_step(
     if sigma > 0:
         # We add noise to the context, including the one used for residual if use_residual is True
         # because x_context is a view of batch_data.
-        x_context += torch.randn_like(x_context) * sigma * t_emp.view(num_emp,1,1,1,1)
+        x_context_t = x_context * (1. - t_emp.view(num_emp,1,1,1,1) ** 2) + torch.randn_like(x_context) * t_emp.view(num_emp,1,1,1,1) ** 2
 
     # uniform noise schedule
     # if sigma > 0:
@@ -202,7 +202,7 @@ def trainer_step(
     da_dt = da_dt.view(num_emp, 1, 1, 1, 1)
 
     # model predicts clean target (x-prediction)
-    model_input_emp = torch.cat([x_context, xt_emp], dim=2)
+    model_input_emp = torch.cat([x_context_t, xt_emp], dim=2)
     context_global_emp = torch.cat([context_info_emp, t_emp.unsqueeze(1), torch.zeros_like(t_emp).unsqueeze(1)], dim=1)
 
     sat_x_pred_emp, lightning_x_pred_emp = model(
@@ -272,9 +272,9 @@ def full_image_generation(
             d_batch = torch.full((batch_size,), 0., device=device)
 
             # to comment if false
-            # x_context_t = x_context * (1 - t_batch.view(batch_size,1,1,1,1) ** 5) + context_noise * t_batch.view(batch_size,1,1,1,1) ** 5
+            x_context_t = x_context * (1 - t_batch.view(batch_size,1,1,1,1) ** 2) + context_noise * t_batch.view(batch_size,1,1,1,1) ** 2
 
-            model_input = torch.cat([x_context, x_t], dim=2)
+            model_input = torch.cat([x_context_t, x_t], dim=2)
             context_global = torch.cat([context_info, t_batch.unsqueeze(1), d_batch.unsqueeze(1)], dim=1)
 
             sat_x_pred, lightning_x_pred = model(
@@ -291,7 +291,7 @@ def full_image_generation(
             else:
                 s_theta = (x_t - x_pred) / t_val
             x_t = x_t - s_theta * d_const
-            x_t = x_t.clamp(-7, 7)
+            x_t = x_t.clamp(-7, 8)
 
             t_val -= d_const
 
