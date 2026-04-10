@@ -18,7 +18,7 @@ class GCPConfig(BaseModel):
     """Google Cloud Platform configuration."""
     source_bucket: str = "eumetsat_mtg_preprocess"
     source_prefix: str = "inference_h5"
-    dest_bucket: str = "inference_result"
+    dest_bucket: str = "inference_result_meteolibre_forecast"
     dest_prefix: str = "forecasts"
     credentials_path: Optional[str] = None
     project_id: Optional[str] = None
@@ -77,7 +77,7 @@ class Config(BaseModel):
             gcp=GCPConfig(
                 source_bucket=os.getenv("GCP_SOURCE_BUCKET", "eumetsat_mtg_preprocess"),
                 source_prefix=os.getenv("GCP_SOURCE_PREFIX", "inference_h5"),
-                dest_bucket=os.getenv("GCP_DEST_BUCKET", "inference_result"),
+                dest_bucket=os.getenv("GCP_DEST_BUCKET", "inference_result_meteolibre_forecast"),
                 dest_prefix=os.getenv("GCP_DEST_PREFIX", "forecasts"),
                 credentials_path=os.getenv("GCP_CREDENTIALS_PATH"),
                 project_id=os.getenv("GCP_PROJECT_ID"),
