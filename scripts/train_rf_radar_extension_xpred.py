@@ -142,6 +142,10 @@ def main():
         print("Jit model")
         model = DualJiT3D(**model_params)
 
+        model_path = "models/epoch_91_mtg_meteofrance_.safetensors"
+        state_dict = load_file(model_path)
+        model.load_state_dict(state_dict)
+
         model = torch.compile(model)
 
         # here we 
@@ -162,10 +166,8 @@ def main():
     else:
         exit()
 
-    # model_path = "models_world_shortcut/model_v16_mtg_world_lightning_shortcut_e120.safetensors"
-    # model_path = "models/radar_finetune_v6_epoch171.safetensors"
-    # state_dict = load_file(model_path)
-    # model.load_state_dict(state_dict)
+    #model_path = "models_world_shortcut/model_v16_mtg_world_lightning_shortcut_e120.safetensors"
+
 
     model, optimizer, dataloader = accelerator.prepare(model, optimizer, dataloader)
 
@@ -239,7 +241,7 @@ def main():
                 generated_images, x_target = full_image_generation(
                     unwrapped_model,
                     batch,
-                    steps=16,
+                    steps=128,
                     device=accelerator.device,
                     parametrization=PARAMETRIZATION,
                     interpolation=INTERPOLATION,
