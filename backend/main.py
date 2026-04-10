@@ -194,7 +194,14 @@ def process_date_pipeline(target_date: datetime) -> dict:
 
         # Download latest H5 file (search whole day, get most recent)
         pattern = target_date.strftime("%Y-%m-%d") + "_*.h5"
-        data_path = download_latest_h5(gcs_client, pattern=pattern)
+        try:
+            data_path = download_latest_h5(gcs_client, pattern=pattern)
+        except FileNotFoundError:
+            logger.warning(
+                f"No H5 file found for date {target_date.date()}, "
+                "falling back to latest available file in bucket"
+            )
+            data_path = download_latest_h5(gcs_client)
 
         # Run inference — each TIFF is uploaded to GCS as soon as it is written
         output_dir = run_inference(data_path, gcs_client=gcs_client)
