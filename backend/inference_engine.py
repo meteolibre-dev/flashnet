@@ -173,6 +173,7 @@ class InferenceEngine:
         context_frames: int = 4,
         use_residual: bool = False,
         interpolation: str = "linear",
+        progressive_noise: bool = True,
         device: Optional[str] = None
     ):
         """Initialize the inference engine.
@@ -185,6 +186,7 @@ class InferenceEngine:
             batch_size: Batch size for processing patches
             context_frames: Number of context frames
             use_residual: Whether to use residual connections
+            progressive_noise: Whether to apply progressive noise to context at inference
             device: Device to run inference on (auto-detected if None)
         """
         self.model_path = model_path
@@ -195,6 +197,7 @@ class InferenceEngine:
         self.context_frames = context_frames
         self.use_residual = use_residual
         self.interpolation = interpolation
+        self.progressive_noise = progressive_noise
 
         if device is None:
             self.device = "cuda" if torch.cuda.is_available() else "cpu"
@@ -272,7 +275,7 @@ class InferenceEngine:
 
         if self.model_type == "jit":
             self.model = DualJiT3D(**model_params)
-            self.model = torch.compile(self.model)
+            #self.model = torch.compile(self.model)
         else:
             self.model = DualUNet3DFiLM(**model_params)
 
@@ -286,7 +289,7 @@ class InferenceEngine:
         self.model.to(self.device)
 
         # if new save setup
-        #self.model = torch.compile(self.model)
+        self.model = torch.compile(self.model)
 
         self.model.eval()
 
@@ -436,10 +439,14 @@ class InferenceEngine:
 
             logger.info(f"Generating forecast step {current_step + 1}/{forecast_steps}")
 
+            # Sample fixed context noise for this autoregressive step
+            if self.progressive_noise:
+                context_noise_full_res = torch.randn_like(current_high_res_context)
+
             for i in tqdm(range(self.denoising_steps), desc="Denoising"):
                 torch.cuda.empty_cache()
                 # Use bfloat16 for accumulation to save memory
-                aggregated_x_pred = torch.zeros(
+                aggregated_velocity = torch.zeros(
                     1, C, this_nb, H_big, W_big, device=self.device, dtype=torch.bfloat16
                 )
                 weights_sum = torch.zeros(
@@ -485,6 +492,12 @@ class InferenceEngine:
                         patch_context = self._extract_patch(
                             current_high_res_context, x_start, y_start, self.patch_size
                         )
+                        if self.progressive_noise:
+                            patch_context_noise = self._extract_patch(
+                                context_noise_full_res, x_start, y_start, self.patch_size
+                            )
+                            alpha = (1 - t_val) ** 0.3
+                            patch_context = patch_context * alpha + patch_context_noise * (1.0 - alpha)
 
                         result = get_position(prediction_date, lons[j], lats[j])
                         date_noon = prediction_date.replace(hour=12, minute=0, second=0, microsecond=0)
@@ -537,11 +550,24 @@ class InferenceEngine:
                     pw = patch_weights.to(torch.bfloat16)
 
                     for j, (x_start, y_start) in enumerate(coords_batch):
-                        aggregated_x_pred[
+                        x_t_patch = x_t_full_res[
                             ...,
                             y_start : y_start + self.patch_size,
                             x_start : x_start + self.patch_size,
-                        ] += x_pred_batch[j : j + 1] * pw
+                        ].to(torch.bfloat16)
+
+                        # s_theta = (x_t - x_pred) / t  (linear)
+                        # s_theta = (x_t - x_pred) / (2 * t)  (polynomial)
+                        if self.interpolation == "polynomial":
+                            v_patch = (x_t_patch - x_pred_batch[j : j + 1]) / (2 * t_val + 1e-8)
+                        else:
+                            v_patch = (x_t_patch - x_pred_batch[j : j + 1]) / t_val
+
+                        aggregated_velocity[
+                            ...,
+                            y_start : y_start + self.patch_size,
+                            x_start : x_start + self.patch_size,
+                        ] += v_patch * pw
 
                         weights_sum[
                             ...,
@@ -552,26 +578,18 @@ class InferenceEngine:
 
                 weights_sum[weights_sum == 0] = 1.0
                 # In-place average in bfloat16 to save memory
-                aggregated_x_pred.div_(weights_sum)
-                
+                aggregated_velocity.div_(weights_sum)
+
                 # Convert back to float32 for the update step
                 # We do it this way to ensure high precision for the Euler step
-                averaged_x_pred = aggregated_x_pred.float()
-                del aggregated_x_pred, weights_sum
+                averaged_velocity = aggregated_velocity.float()
+                del aggregated_velocity, weights_sum
 
-                # s_theta = (x_t - averaged_x_pred) / t  (linear)
-                # s_theta = (x_t - averaged_x_pred) / (2 * t)  (polynomial)
-                # In-place update averaged_x_pred to become s_theta
-                if self.interpolation == "polynomial":
-                    averaged_x_pred.mul_(-1.0).add_(x_t_full_res).div_(2 * t_val + 1e-8)
-                else:
-                    averaged_x_pred.mul_(-1.0).add_(x_t_full_res).div_(t_val)
-                
                 # x_t = x_t - s_theta * dt
-                x_t_full_res.sub_(averaged_x_pred, alpha=dt)
+                x_t_full_res.sub_(averaged_velocity, alpha=dt)
                 x_t_full_res.clamp_(-7, 7)
-                
-                del averaged_x_pred
+
+                del averaged_velocity
 
             torch.cuda.empty_cache()
 
@@ -611,6 +629,8 @@ class InferenceEngine:
             current_high_res_context = new_context
 
             del x_t_full_res
+            if self.progressive_noise:
+                del context_noise_full_res
             torch.cuda.empty_cache()
             x_t_full_res = torch.randn(1, C, nb_forecast, H_big, W_big, device=self.device)
             current_step += this_nb

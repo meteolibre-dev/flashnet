@@ -104,12 +104,16 @@ def run_inference(data_path: str, gcs_client=None) -> str:
 
     upload_fn = None
     if gcs_client is not None:
+        # Extract datetime subfolder from H5 filename (e.g. "2026-04-11_08-20_full.h5" → "2026-04-11_08-20")
+        h5_name = Path(data_path).name
+        h5_datetime_str = h5_name.split("_full.h5")[0]  # e.g. "2026-04-11_08-20"
+
         def upload_fn(filepath: str):
             try:
                 filepath = Path(filepath)
                 date_str = filepath.stem.split("_")[1]
                 date_prefix = f"{date_str[:4]}-{date_str[4:6]}-{date_str[6:8]}"
-                dest_blob = f"{config.gcp.dest_prefix}/{date_prefix}/{filepath.name}"
+                dest_blob = f"{config.gcp.dest_prefix}/{date_prefix}/{h5_datetime_str}/{filepath.name}"
                 gcs_client.upload_file(str(filepath), dest_blob)
             except Exception:
                 logger.exception(f"Failed to upload {filepath}")
@@ -129,17 +133,24 @@ def run_inference(data_path: str, gcs_client=None) -> str:
     return str(output_dir)
 
 
-def upload_results(output_dir: str, gcs_client):
+def upload_results(output_dir: str, gcs_client, h5_path: str = None):
     """Upload inference results to GCP bucket.
 
     Args:
         output_dir: Directory containing output files
         gcs_client: GCP storage client
+        h5_path: Path to the source H5 file; its datetime is used as a subfolder
     """
     from backend.config import get_config
 
     config = get_config()
     output_path = Path(output_dir)
+
+    # Extract H5 datetime subfolder (e.g. "2026-04-11_08-20_full.h5" → "2026-04-11_08-20")
+    h5_datetime_str = None
+    if h5_path:
+        h5_name = Path(h5_path).name
+        h5_datetime_str = h5_name.split("_full.h5")[0]
 
     tiff_files = list(output_path.glob("*.tiff"))
     if not tiff_files:
@@ -164,9 +175,11 @@ def upload_results(output_dir: str, gcs_client):
         raise ValueError("Could not parse dates from any TIFF files")
 
     uploaded = []
-    # Upload each file to its correct date folder based on the timestamp in the filename
     for date_prefix, files in files_by_date.items():
-        dest_prefix = f"{config.gcp.dest_prefix}/{date_prefix}"
+        if h5_datetime_str:
+            dest_prefix = f"{config.gcp.dest_prefix}/{date_prefix}/{h5_datetime_str}"
+        else:
+            dest_prefix = f"{config.gcp.dest_prefix}/{date_prefix}"
         for filepath in files:
             dest_blob_name = f"{dest_prefix}/{filepath.name}"
             gcs_client.upload_file(str(filepath), dest_blob_name)
@@ -194,7 +207,14 @@ def process_date_pipeline(target_date: datetime) -> dict:
 
         # Download latest H5 file (search whole day, get most recent)
         pattern = target_date.strftime("%Y-%m-%d") + "_*.h5"
-        data_path = download_latest_h5(gcs_client, pattern=pattern)
+        try:
+            data_path = download_latest_h5(gcs_client, pattern=pattern)
+        except FileNotFoundError:
+            logger.warning(
+                f"No H5 file found for date {target_date.date()}, "
+                "falling back to latest available file in bucket"
+            )
+            data_path = download_latest_h5(gcs_client)
 
         # Run inference — each TIFF is uploaded to GCS as soon as it is written
         output_dir = run_inference(data_path, gcs_client=gcs_client)
