@@ -164,7 +164,12 @@ def trainer_step(
     context_info_emp = context_info
     mask_emp = mask_data_sat[:num_emp, :, model.context_frames:]
 
-    t_emp = torch.rand(num_emp, device=device)
+    # Stratified sampling with 32 bins
+    n_bins = 32
+    bin_size = 1.0 / n_bins
+    bin_indices = torch.randperm(n_bins, device=device).repeat_interleave((num_emp + n_bins - 1) // n_bins)[:num_emp]
+    t_emp = (bin_indices.float() + torch.rand(num_emp, device=device)) * bin_size
+    t_emp = t_emp[torch.randperm(num_emp, device=device)]
 
     # log norm sampling for t
     eps = torch.randn(num_emp, device=device)
