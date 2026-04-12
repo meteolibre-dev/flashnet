@@ -817,7 +817,7 @@ model_v23_mtg_europe_lightning_radar_shortcut:
   seed: 42
   gen_steps: 4
   nb_forecast: 3
-  sigma_noise_input: 0.7
+  sigma_noise_input: 1.0
   gradient_clip_value: 1.0
   residual: False
   dataset_path: "/workspace/dataset"
