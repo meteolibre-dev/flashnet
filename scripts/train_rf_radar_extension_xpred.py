@@ -28,7 +28,7 @@ project_root = os.path.abspath("/workspace/flashnet/")
 sys.path.insert(0, project_root)
 
 from meteolibre_model.dataset.dataset_mtg_lightning_radar import MeteoLibreMapDataset
-from meteolibre_model.diffusion.rectified_flow_lightning_shortcut_xpred_reflow import (
+from meteolibre_model.diffusion.rectified_flow_lightning_shortcut_xpred_blur import (
     trainer_step,
     full_image_generation,
 )
@@ -39,7 +39,7 @@ from meteolibre_model.models.jit3d_dual_v2 import DualJiT3D
 config_path = os.path.join(project_root, "meteolibre_model/config/configs.yml")
 with open(config_path) as f:
     config = yaml.safe_load(f)
-params = config['model_v22_mtg_europe_lightning_radar_shortcut']
+params = config['model_v23_mtg_europe_lightning_radar_shortcut']
 
 
 def main():
