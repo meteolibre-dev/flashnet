@@ -172,8 +172,8 @@ def trainer_step(
     t_emp = t_emp[torch.randperm(num_emp, device=device)]
 
     # log norm sampling for t
-    eps = torch.randn(num_emp, device=device)
-    t_emp = torch.sigmoid(1.0 + 1.5 * eps).clamp(1e-4, 1 - 1e-4)
+    # eps = torch.randn(num_emp, device=device)
+    # t_emp = torch.sigmoid(1.0 + 1.5 * eps).clamp(1e-4, 1 - 1e-4)
 
     # progressive noise
     if sigma > 0:
