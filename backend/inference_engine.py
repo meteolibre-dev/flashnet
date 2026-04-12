@@ -173,7 +173,6 @@ class InferenceEngine:
         context_frames: int = 4,
         use_residual: bool = False,
         interpolation: str = "linear",
-        progressive_noise: bool = True,
         device: Optional[str] = None
     ):
         """Initialize the inference engine.
@@ -186,7 +185,6 @@ class InferenceEngine:
             batch_size: Batch size for processing patches
             context_frames: Number of context frames
             use_residual: Whether to use residual connections
-            progressive_noise: Whether to apply progressive noise to context at inference
             device: Device to run inference on (auto-detected if None)
         """
         self.model_path = model_path
@@ -197,7 +195,6 @@ class InferenceEngine:
         self.context_frames = context_frames
         self.use_residual = use_residual
         self.interpolation = interpolation
-        self.progressive_noise = progressive_noise
 
         if device is None:
             self.device = "cuda" if torch.cuda.is_available() else "cpu"
@@ -439,9 +436,6 @@ class InferenceEngine:
 
             logger.info(f"Generating forecast step {current_step + 1}/{forecast_steps}")
 
-            # Sample fixed context noise for this autoregressive step
-            if self.progressive_noise:
-                context_noise_full_res = torch.randn_like(current_high_res_context)
 
             for i in tqdm(range(self.denoising_steps), desc="Denoising"):
                 torch.cuda.empty_cache()
@@ -492,12 +486,6 @@ class InferenceEngine:
                         patch_context = self._extract_patch(
                             current_high_res_context, x_start, y_start, self.patch_size
                         )
-                        if self.progressive_noise:
-                            patch_context_noise = self._extract_patch(
-                                context_noise_full_res, x_start, y_start, self.patch_size
-                            )
-                            alpha = (1 - t_val) ** 0.3
-                            patch_context = patch_context * alpha + patch_context_noise * (1.0 - alpha)
 
                         result = get_position(prediction_date, lons[j], lats[j])
                         date_noon = prediction_date.replace(hour=12, minute=0, second=0, microsecond=0)
@@ -629,8 +617,6 @@ class InferenceEngine:
             current_high_res_context = new_context
 
             del x_t_full_res
-            if self.progressive_noise:
-                del context_noise_full_res
             torch.cuda.empty_cache()
             x_t_full_res = torch.randn(1, C, nb_forecast, H_big, W_big, device=self.device)
             current_step += this_nb
