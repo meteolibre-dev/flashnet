@@ -107,13 +107,15 @@ def run_inference(data_path: str, gcs_client=None) -> str:
         # Extract datetime subfolder from H5 filename (e.g. "2026-04-11_08-20_full.h5" → "2026-04-11_08-20")
         h5_name = Path(data_path).name
         h5_datetime_str = h5_name.split("_full.h5")[0]  # e.g. "2026-04-11_08-20"
+        # Use the H5 file's own date for the date folder so all forecasts
+        # from a single run land in the same bucket, even when predictions
+        # cross midnight UTC.
+        h5_date_prefix = h5_datetime_str.split("_")[0]  # e.g. "2026-04-11"
 
         def upload_fn(filepath: str):
             try:
                 filepath = Path(filepath)
-                date_str = filepath.stem.split("_")[1]
-                date_prefix = f"{date_str[:4]}-{date_str[4:6]}-{date_str[6:8]}"
-                dest_blob = f"{config.gcp.dest_prefix}/{date_prefix}/{h5_datetime_str}/{filepath.name}"
+                dest_blob = f"{config.gcp.dest_prefix}/{h5_date_prefix}/{h5_datetime_str}/{filepath.name}"
                 gcs_client.upload_file(str(filepath), dest_blob)
             except Exception:
                 logger.exception(f"Failed to upload {filepath}")
@@ -156,35 +158,28 @@ def upload_results(output_dir: str, gcs_client, h5_path: str = None):
     if not tiff_files:
         raise FileNotFoundError("No TIFF files found in output directory")
 
-    # Group files by their date folder based on the timestamp in the filename
-    # Each file may have a different date if there are files from multiple inference runs
-    files_by_date = {}
-    for filepath in tiff_files:
+    # Use the H5 file's own date for the date folder so all forecasts
+    # from a single run land in the same bucket, even when predictions
+    # cross midnight UTC.
+    if h5_datetime_str:
+        date_prefix = h5_datetime_str.split("_")[0]  # e.g. "2026-04-11"
+        dest_prefix = f"{config.gcp.dest_prefix}/{date_prefix}/{h5_datetime_str}"
+    else:
+        # Fallback: derive date from the first TIFF filename
+        first_file = tiff_files[0]
         try:
-            # Filename format: forecast_YYYYMMDDHHMM_<type>.tiff
-            date_str = filepath.stem.split("_")[1]
+            date_str = first_file.stem.split("_")[1]
             date_prefix = f"{date_str[:4]}-{date_str[4:6]}-{date_str[6:8]}"
-            if date_prefix not in files_by_date:
-                files_by_date[date_prefix] = []
-            files_by_date[date_prefix].append(filepath)
+            dest_prefix = f"{config.gcp.dest_prefix}/{date_prefix}"
         except (IndexError, ValueError) as e:
-            logger.warning(f"Could not parse date from filename {filepath.name}: {e}")
-            continue
-
-    if not files_by_date:
-        raise ValueError("Could not parse dates from any TIFF files")
+            raise ValueError(f"Could not parse date from filename {first_file.name}: {e}")
 
     uploaded = []
-    for date_prefix, files in files_by_date.items():
-        if h5_datetime_str:
-            dest_prefix = f"{config.gcp.dest_prefix}/{date_prefix}/{h5_datetime_str}"
-        else:
-            dest_prefix = f"{config.gcp.dest_prefix}/{date_prefix}"
-        for filepath in files:
-            dest_blob_name = f"{dest_prefix}/{filepath.name}"
-            gcs_client.upload_file(str(filepath), dest_blob_name)
-            uploaded.append(filepath.name)
-            logger.info(f"Uploaded {filepath.name} to {config.gcp.dest_bucket}/{dest_blob_name}")
+    for filepath in tiff_files:
+        dest_blob_name = f"{dest_prefix}/{filepath.name}"
+        gcs_client.upload_file(str(filepath), dest_blob_name)
+        uploaded.append(filepath.name)
+        logger.info(f"Uploaded {filepath.name} to {config.gcp.dest_bucket}/{dest_blob_name}")
 
     return uploaded
 
