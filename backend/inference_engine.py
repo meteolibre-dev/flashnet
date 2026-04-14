@@ -272,7 +272,7 @@ class InferenceEngine:
 
         if self.model_type == "jit":
             self.model = DualJiT3D(**model_params)
-            self.model = torch.compile(self.model)
+            #self.model = torch.compile(self.model)
         else:
             self.model = DualUNet3DFiLM(**model_params)
 
@@ -286,7 +286,7 @@ class InferenceEngine:
         self.model.to(self.device)
 
         # if new save setup
-        # self.model = torch.compile(self.model)
+        self.model = torch.compile(self.model)
 
         self.model.eval()
 
