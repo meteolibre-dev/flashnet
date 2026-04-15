@@ -447,14 +447,11 @@ class InferenceEngine:
                     1, 1, this_nb, H_big, W_big, device=self.device, dtype=torch.bfloat16
                 )
 
-                # Non-uniform schedule: spend half the steps in [1.0, 0.9]
-                # and the other half in [0.9, 0.0].
-                if i < half_steps:
-                    t_val = 1.0 - i * (0.1 / half_steps)
-                    dt = 0.1 / half_steps
-                else:
-                    t_val = 0.9 - (i - half_steps) * (0.9 / half_steps)
-                    dt = 0.9 / half_steps
+                # Uniform schedule: linearly space t from 1.0 to 0.0
+                t_val = 1.0 - i / self.denoising_steps
+                dt = 1.0 / self.denoising_steps
+
+
                 t_batch_val = torch.full((1,), t_val, device=self.device)
                 d_batch_val = torch.full((1,), 0, device=self.device)
 
