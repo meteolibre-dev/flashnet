@@ -191,6 +191,18 @@ STD_LIGHTNING = torch.tensor(
     ]
 )
 
+MEAN_LIGHTNING_CG = torch.tensor(
+    [
+        0.0,
+    ]
+)
+
+STD_LIGHTNING_CG = torch.tensor(
+    [
+        3.0,
+    ]
+)
+
 MEAN_LIGHTNING_RESIDUAL = torch.tensor([0.0])
 STD_LIGHTNING_RESIDUAL  = torch.tensor([0.1])
 
