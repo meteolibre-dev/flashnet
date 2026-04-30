@@ -86,9 +86,9 @@ def denormalize(sat_data, lightning_data, device):
         0
     ).unsqueeze(-1).unsqueeze(-1).unsqueeze(-1).to(device)
 
-    lightning_data = lightning_data.to(device) * STD_LIGHTNING.unsqueeze(0).unsqueeze(
+    lightning_data = lightning_data.to(device) * STD_LIGHTNING_CG.unsqueeze(0).unsqueeze(
         -1
-    ).unsqueeze(-1).unsqueeze(-1).to(device) + MEAN_LIGHTNING.unsqueeze(0).unsqueeze(
+    ).unsqueeze(-1).unsqueeze(-1).to(device) + MEAN_LIGHTNING_CG.unsqueeze(0).unsqueeze(
         -1
     ).unsqueeze(-1).unsqueeze(-1).to(device)
 
