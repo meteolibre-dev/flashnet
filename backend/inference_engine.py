@@ -773,7 +773,7 @@ class InferenceEngine:
                 sat_frame = sat_data[i]
 
                 lightning_frame = lightning_data[i]
-                cg_lightning_data = cg_lightning_data[i]
+                cg_lightning_frame = cg_lightning_data[i]
 
                 radar_frame = radar_data[i]
                 elev_frame = elevation_data[None, :, :]
@@ -781,7 +781,7 @@ class InferenceEngine:
 
                 # Concatenate sat + elevation + radar (now 18 channels: 16 sat + 1 elev + 1 radar)
                 sat_elev_radar_frame = np.concatenate([sat_frame, elev_frame, radar_frame], axis=0)
-                frame = np.concatenate([sat_elev_radar_frame, lightning_frame, cg_lightning_data], axis=0)[None, ...]
+                frame = np.concatenate([sat_elev_radar_frame, lightning_frame, cg_lightning_frame], axis=0)[None, ...]
                 initial_frames.append(frame)
 
             current_high_res_context = np.stack(initial_frames, axis=2)
