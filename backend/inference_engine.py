@@ -730,9 +730,12 @@ class InferenceEngine:
                 lightning_data = hf["lightning_data"][:]
 
                 if "cg_lightning_data" in hf.keys():
+                    print("keys finded")
                     cg_lightning_data = hf["cg_lightning_data"][:]
                 else:
                     cg_lightning_data = np.zeros_like(lightning_data)
+
+                print("cg_lightning_data shape:", cg_lightning_data.shape)
 
                 radar_data = hf["radar_data"][:]
 
