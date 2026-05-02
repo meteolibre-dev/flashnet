@@ -347,7 +347,7 @@ class InferenceEngine:
         date: Optional[datetime] = None,
         output_dir: Optional[str] = None,
         c_sat: int = 18,
-        c_lightning: int = 1,
+        c_lightning: int = 2,
         c_radar: int = 1,
     ) -> Generator[tuple[torch.Tensor, torch.Tensor, torch.Tensor], None, None]:
         """Run tiled inference for weather forecasting.
@@ -418,7 +418,7 @@ class InferenceEngine:
             transformer = None
 
         c_sat = getattr(initial_context, 'c_sat', 18)
-        c_lightning = getattr(initial_context, 'c_lightning', 1)
+        c_lightning = getattr(initial_context, 'c_lightning', 2)
         c_radar = getattr(initial_context, 'c_radar', 1)
 
         half_steps = self.denoising_steps // 2
