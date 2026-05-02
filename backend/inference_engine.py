@@ -419,7 +419,7 @@ class InferenceEngine:
 
         c_sat = getattr(initial_context, 'c_sat', 18)
         c_lightning = getattr(initial_context, 'c_lightning', 1) + getattr(initial_context, 'cg_lightning', 1)
-        
+
         c_radar = getattr(initial_context, 'c_radar', 1)
 
         half_steps = self.denoising_steps // 2
@@ -517,9 +517,6 @@ class InferenceEngine:
 
                     model_input_sat = model_input[:, :c_sat]
                     model_input_lightning = model_input[:, c_sat : (c_sat + c_lightning)]
-
-                    print("model_input_sat.shape: ", model_input_sat.shape)
-                    print("model_input_lightning.shape: ", model_input_lightning.shape)
 
                     with torch.autocast("cuda", dtype=torch.bfloat16):
                         sat_pred_batch, lightning_pred_batch = self.model(
