@@ -123,7 +123,7 @@ def get_x_t_rf(x0, x1, t, interpolation="linear"):
     else:
         raise ValueError(f"Unknown interpolation schedule: {interpolation}")
 
-def apply_blur_with_sigma_batched(x, blur_sigma, n_bins=8, min_kernel=0, sigma_factor=8):
+def apply_blur_with_sigma_batched(x, blur_sigma, n_bins=8, min_kernel=0, sigma_factor=3):
     """
     Vectorisé via binning des sigma.
     blur_sigma: (B,) tensor, sigma en pixels
