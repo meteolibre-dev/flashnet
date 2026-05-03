@@ -455,8 +455,10 @@ class InferenceEngine:
 
                 t_batch_val = torch.full((1,), t_val, device=self.device)
 
-
-                d_batch_val = torch.full((1,), 0, device=self.device)
+                if current_step == 0:
+                    d_batch_val = torch.full((1,), 0, device=self.device)
+                else:
+                    d_batch_val = torch.full((1,), 0.15, device=self.device)
 
 
                 for i_batch in range(0, len(patch_coords), self.batch_size):
