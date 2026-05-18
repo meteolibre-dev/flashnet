@@ -245,7 +245,7 @@ def trainer_step(
 
     # model predicts clean target (x-prediction)
     model_input_emp = torch.cat([x_context_t, xt_emp], dim=2)
-    context_global_emp = torch.cat([context_info_emp, t_emp.unsqueeze(1), (torch.zeros_like(t_emp) + blur_sigma).unsqueeze(1)], dim=1)
+    context_global_emp = torch.cat([context_info_emp, t_emp.unsqueeze(1), (torch.zeros_like(t_emp)).unsqueeze(1)], dim=1)
 
     sat_x_pred_emp, lightning_x_pred_emp = model(
         model_input_emp[:, :c_sat].float(),
