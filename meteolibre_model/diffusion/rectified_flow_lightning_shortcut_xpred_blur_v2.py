@@ -123,7 +123,7 @@ def get_x_t_rf(x0, x1, t, interpolation="linear"):
     else:
         raise ValueError(f"Unknown interpolation schedule: {interpolation}")
 
-def apply_blur_with_sigma_batched(x, blur_sigma, n_bins=8, min_kernel=0, sigma_factor=4):
+def apply_blur_with_sigma_batched(x, blur_sigma, n_bins=8, min_kernel=0, sigma_factor=3):
     """
     Vectorisé via binning des sigma.
     blur_sigma: (B,) tensor, sigma en pixels
@@ -154,7 +154,7 @@ def apply_blur_with_sigma_batched(x, blur_sigma, n_bins=8, min_kernel=0, sigma_f
         k = max(min_kernel, 2 * int(sigma_factor * s) + 1)
 
         coords = torch.arange(k, dtype=torch.float32, device=x.device) - k // 2
-        kernel_1d = torch.exp(-coords ** 2 / (2 * s ** 2))
+        kernel_1d = torch.exp(-(coords ) ** 2 / (2 * s ** 2))
         kernel_1d = kernel_1d / kernel_1d.sum()
         kernel_2d = kernel_1d[:, None] * kernel_1d[None, :]
         kernel = kernel_2d.expand(c * t, 1, k, k)
@@ -226,7 +226,7 @@ def trainer_step(
         x_context_t = apply_blur_with_sigma_batched(x_context, blur_sigma)
         
         # Random noise level per sample, uniform in [0, sigma]
-        noise_sigma = blur_sigma / 4.
+        noise_sigma = blur_sigma / sigma * 0.1  # between 0 and 0.1 by default 
         noise_sigma = noise_sigma.view(b, 1, 1, 1, 1)
         x_context_t = x_context_t + noise_sigma * torch.randn_like(x_context)
     else:
