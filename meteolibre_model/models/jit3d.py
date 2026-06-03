@@ -200,7 +200,10 @@ class JiT3D_Modern(nn.Module):
         depth=12,
         num_heads=12,
         context_dim=128,
-        time_emb_dim=64
+        time_emb_dim=64,
+        rope_type="axial",          # "axial" (default) or "spiral"
+        rope_spiral_directions=4,    # K directions for Spiral RoPE (only if rope_type="spiral")
+        rope_freq_scale=1.0,        # Frequency scaling for Spiral RoPE
     ):
         super().__init__()
         self.embed_dim = embed_dim
@@ -214,9 +217,17 @@ class JiT3D_Modern(nn.Module):
         self.grid_h = img_size[1] // patch_size[1]
         self.grid_w = img_size[2] // patch_size[2]
 
-        # RoPE (Axial)
+        # RoPE
         # Note: We pre-allocate enough size (e.g., 2x strict size) to allow flexibility
-        self.rope = RoPE3D(embed_dim // num_heads, self.grid_t*2, self.grid_h*2, self.grid_w*2)
+        if rope_type == "spiral":
+            from meteolibre_model.models.rope3d_spiral import RoPE3DSpiral
+            self.rope = RoPE3DSpiral(
+                embed_dim // num_heads, self.grid_t*2, self.grid_h*2, self.grid_w*2,
+                n_spiral_directions=rope_spiral_directions,
+                freq_scale=rope_freq_scale,
+            )
+        else:
+            self.rope = RoPE3D(embed_dim // num_heads, self.grid_t*2, self.grid_h*2, self.grid_w*2)
         
         # Time/Context Injection
         input_context_dim = context_dim - 1 + time_emb_dim 

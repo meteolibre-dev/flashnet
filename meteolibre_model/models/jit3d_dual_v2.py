@@ -24,7 +24,10 @@ class DualJiT3D(nn.Module):
         num_heads=12,
         context_dim=128,
         time_emb_dim=64,
-        context_frames = 4,
+        context_frames=4,
+        rope_type="axial",
+        rope_spiral_directions=4,
+        rope_freq_scale=1.0,
     ):
         super().__init__()
         self.sat_out_channels = sat_out_channels
@@ -40,6 +43,9 @@ class DualJiT3D(nn.Module):
             num_heads=num_heads,
             context_dim=context_dim,
             time_emb_dim=time_emb_dim,
+            rope_type=rope_type,
+            rope_spiral_directions=rope_spiral_directions,
+            rope_freq_scale=rope_freq_scale,
         )
 
     def forward(self, sat_input: torch.Tensor, kpi_input: torch.Tensor, context: torch.Tensor):
