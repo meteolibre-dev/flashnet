@@ -51,7 +51,8 @@ class MeteoLibreMapDataset(torch.utils.data.Dataset):
 
         # Find all parquet files. We start with a sorted list for consistency.
         data_path = os.path.join(self.localrepo, "data", "*.parquet")
-        self.base_file_paths = sorted(glob.glob(data_path))
+        data_v1_path = os.path.join(self.localrepo, "data_v1", "*.parquet")
+        self.base_file_paths = sorted(glob.glob(data_path) + glob.glob(data_v1_path))
 
         # we remove the last one
         self.base_file_paths = self.base_file_paths
