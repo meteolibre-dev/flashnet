@@ -210,24 +210,30 @@ def trainer_step(
     mask_emp = mask_data_sat[:num_emp, :, model.context_frames:]
 
     # Stratified sampling with 32 bins
-    n_bins = 32
-    bin_size = 1.0 / n_bins
-    bin_indices = torch.randperm(n_bins, device=device).repeat_interleave((num_emp + n_bins - 1) // n_bins)[:num_emp]
-    t_emp = (bin_indices.float() + torch.rand(num_emp, device=device)) * bin_size
-    t_emp = t_emp[torch.randperm(num_emp, device=device)]
+    # n_bins = 32
+    # bin_size = 1.0 / n_bins
+    # bin_indices = torch.randperm(n_bins, device=device).repeat_interleave((num_emp + n_bins - 1) // n_bins)[:num_emp]
+    # t_emp = (bin_indices.float() + torch.rand(num_emp, device=device)) * bin_size
+    # t_emp = t_emp[torch.randperm(num_emp, device=device)]
 
     # log norm sampling for t
-    # eps = torch.randn(num_emp, device=device)
-    # t_emp = torch.sigmoid(1.0 + 1.5 * eps).clamp(1e-4, 1 - 1e-4)
+    eps = torch.randn(num_emp, device=device)
+    t_emp = torch.sigmoid(-0.5 + 1.2 * eps).clamp(1e-4, 1 - 1e-4)
 
     # progressive noise
     if sigma > 0:
-        blur_sigma = torch.rand(b, device=device) * sigma  # (B,)
+        eps = torch.randn(num_emp, device=device)
+        t_emp_blur = torch.sigmoid(1.4 + 1.8 * eps).clamp(1e-4, 1 - 1e-4)
+
+        blur_sigma = t_emp_blur * sigma  # (B,)
         x_context_t = apply_blur_with_sigma_batched(x_context, blur_sigma)
         
         # Random noise level per sample, uniform in [0, sigma]
-        noise_sigma = blur_sigma / sigma * 0.1  # between 0 and 0.1 by default 
-        noise_sigma = noise_sigma.view(b, 1, 1, 1, 1)
+        frame_noise_rand = torch.rand(b, model.context_frames, device=device)
+
+        noise_sigma = (blur_sigma.unsqueeze(1) / sigma * 0.05 * frame_noise_rand)
+        noise_sigma = noise_sigma.view(b, 1, model.context_frames, 1, 1)
+
         x_context_t = x_context_t + noise_sigma * torch.randn_like(x_context)
     else:
         x_context_t = x_context
@@ -256,17 +262,9 @@ def trainer_step(
     x_sat_pred_emp = sat_x_pred_emp[:, :, model.context_frames:]
     x_light_pred_emp = lightning_x_pred_emp[:, :, model.context_frames:]
 
-    if interpolation == "polynomial":
-        # da/dt = -1/(2*sqrt(t))  =>  (da/dt)^2 ∝ 1/t
-        weight = 1.0 / (t_emp.view(b,1,1,1,1) + 1e-2) ** 2
-    else:
-        # linear: da/dt = -1  =>  empirical 1/t^2 upweighting of small t
-        weight = 1.0 / (t_emp.view(b, 1, 1, 1, 1) + 1e-2) ** 2
-    weight = weight.clamp(0.9, 10.)
-
     # direct x-loss
-    loss_sat     = (weight * (x_sat_pred_emp - x0_emp[:, :c_sat]) ** 2)[mask_emp].mean()
-    loss_lightning = (weight * (x_light_pred_emp - x0_emp[:, c_sat:]) ** 2).mean()
+    loss_sat     = ((x_sat_pred_emp - x0_emp[:, :c_sat]) ** 2)[mask_emp].mean()
+    loss_lightning = ((x_light_pred_emp - x0_emp[:, c_sat:]) ** 2).mean()
 
     return loss_sat + 5.0 * loss_lightning, loss_sat, loss_lightning
 
@@ -303,8 +301,6 @@ def full_image_generation(
 
         batch_size, nb_channel, nb_context, h, w = x_context.shape
         x_t = torch.randn(batch_size, nb_channel, nb_forecasted_frame, h, w, device=device)
-
-        context_noise = torch.randn(batch_size, nb_channel, nb_context, h, w, device=device)
 
         d_const = 1.0 / steps
         t_val = 1.0
