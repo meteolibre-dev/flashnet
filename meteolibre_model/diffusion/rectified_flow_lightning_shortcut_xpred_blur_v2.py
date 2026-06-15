@@ -262,9 +262,17 @@ def trainer_step(
     x_sat_pred_emp = sat_x_pred_emp[:, :, model.context_frames:]
     x_light_pred_emp = lightning_x_pred_emp[:, :, model.context_frames:]
 
+    if interpolation == "polynomial":
+        # da/dt = -1/(2*sqrt(t))  =>  (da/dt)^2 ∝ 1/t
+        weight = 1.0 / (t_emp.view(b,1,1,1,1) + 1e-2) ** 2
+    else:
+        # linear: da/dt = -1  =>  empirical 1/t^2 upweighting of small t
+        weight = 1.0 / (t_emp.view(b, 1, 1, 1, 1) + 1e-2) ** 2
+    weight = weight.clamp(0.9, 10.)
+
     # direct x-loss
-    loss_sat     = ((x_sat_pred_emp - x0_emp[:, :c_sat]) ** 2)[mask_emp].mean()
-    loss_lightning = ((x_light_pred_emp - x0_emp[:, c_sat:]) ** 2).mean()
+    loss_sat     = (weight * (x_sat_pred_emp - x0_emp[:, :c_sat]) ** 2)[mask_emp].mean()
+    loss_lightning = (weight * (x_light_pred_emp - x0_emp[:, c_sat:]) ** 2).mean()
 
     return loss_sat + 5.0 * loss_lightning, loss_sat, loss_lightning
 
