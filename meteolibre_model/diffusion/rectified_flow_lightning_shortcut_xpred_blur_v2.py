@@ -210,18 +210,19 @@ def trainer_step(
     mask_emp = mask_data_sat[:num_emp, :, model.context_frames:]
 
     # Stratified sampling with 32 bins
-    # n_bins = 32
-    # bin_size = 1.0 / n_bins
-    # bin_indices = torch.randperm(n_bins, device=device).repeat_interleave((num_emp + n_bins - 1) // n_bins)[:num_emp]
-    # t_emp = (bin_indices.float() + torch.rand(num_emp, device=device)) * bin_size
-    # t_emp = t_emp[torch.randperm(num_emp, device=device)]
+    n_bins = 32
+    bin_size = 1.0 / n_bins
+    bin_indices = torch.randperm(n_bins, device=device).repeat_interleave((num_emp + n_bins - 1) // n_bins)[:num_emp]
+    t_emp = (bin_indices.float() + torch.rand(num_emp, device=device)) * bin_size
+    t_emp = t_emp[torch.randperm(num_emp, device=device)]
 
-    # log norm sampling for t
-    eps = torch.randn(num_emp, device=device)
-    t_emp = torch.sigmoid(-0.5 + 1.2 * eps).clamp(1e-4, 1 - 1e-4)
+    # # log norm sampling for t
+    # eps = torch.randn(num_emp, device=device)
+    # t_emp = torch.sigmoid(-0.5 + 1.2 * eps).clamp(1e-4, 1 - 1e-4)
 
     # progressive noise
     if sigma > 0:
+        
         eps = torch.randn(num_emp, device=device)
         t_emp_blur = torch.sigmoid(1.4 + 1.8 * eps).clamp(1e-4, 1 - 1e-4)
 
@@ -268,7 +269,14 @@ def trainer_step(
     else:
         # linear: da/dt = -1  =>  empirical 1/t^2 upweighting of small t
         weight = 1.0 / (t_emp.view(b, 1, 1, 1, 1) + 1e-2) ** 2
-    weight = weight.clamp(0.9, 10.)
+
+    alpha = 1.0 - t_emp
+    snr = (alpha ** 2) / (t_emp ** 2 + 1e-8)
+    gamma = 0.7
+    weight = (snr ** gamma).clamp(max=20.0)
+    weight = weight.view(b, 1, 1, 1, 1)
+    
+    #weight = weight.clamp(0.9, 10.)
 
     # direct x-loss
     loss_sat     = (weight * (x_sat_pred_emp - x0_emp[:, :c_sat]) ** 2)[mask_emp].mean()
