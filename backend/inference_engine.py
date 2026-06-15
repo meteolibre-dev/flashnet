@@ -173,6 +173,7 @@ class InferenceEngine:
         context_frames: int = 4,
         use_residual: bool = False,
         interpolation: str = "linear",
+        addnoise_condition: float = 0.02,
         device: Optional[str] = None
     ):
         """Initialize the inference engine.
@@ -185,6 +186,10 @@ class InferenceEngine:
             batch_size: Batch size for processing patches
             context_frames: Number of context frames
             use_residual: Whether to use residual connections
+            addnoise_condition: Std-dev of Gaussian noise added to model-generated
+                context frames between AR steps. Closes the train/test gap:
+                model was trained on noised context, so clean context at inference
+                is out-of-distribution. Set 0.0 to disable. Recommended 0.02-0.05.
             device: Device to run inference on (auto-detected if None)
         """
         self.model_path = model_path
@@ -195,6 +200,7 @@ class InferenceEngine:
         self.context_frames = context_frames
         self.use_residual = use_residual
         self.interpolation = interpolation
+        self.addnoise_condition = addnoise_condition
 
         if device is None:
             self.device = "cuda" if torch.cuda.is_available() else "cpu"
@@ -612,6 +618,8 @@ class InferenceEngine:
                 ).to(self.device)
             del current_high_res_context
             torch.cuda.empty_cache()
+            if self.addnoise_condition > 0:
+                new_context = new_context + self.addnoise_condition * torch.randn_like(new_context)
             current_high_res_context = new_context
 
             del x_t_full_res
