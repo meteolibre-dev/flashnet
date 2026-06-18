@@ -270,13 +270,7 @@ def trainer_step(
         # linear: da/dt = -1  =>  empirical 1/t^2 upweighting of small t
         weight = 1.0 / (t_emp.view(b, 1, 1, 1, 1) + 1e-2) ** 2
 
-    alpha = 1.0 - t_emp
-    snr = (alpha ** 2) / (t_emp ** 2 + 1e-8)
-    gamma = 0.7
-    weight = (snr ** gamma).clamp(max=20.0)
-    weight = weight.view(b, 1, 1, 1, 1)
-    
-    #weight = weight.clamp(0.9, 10.)
+    weight = weight.clamp(0.9, 10.)
 
     # direct x-loss
     loss_sat     = (weight * (x_sat_pred_emp - x0_emp[:, :c_sat]) ** 2)[mask_emp].mean()
