@@ -6,6 +6,7 @@ This script trains a rectified flow model using the MeteoLibreMapDataset and UNe
 import sys
 import os
 import argparse
+import random
 import torch
 from torch.utils.data import DataLoader
 from torchvision.utils import make_grid
@@ -65,7 +66,7 @@ def main():
     batch_size = params['batch_size']
     learning_rate = params['learning_rate']
     num_epochs = params['num_epochs']
-    seed = params['seed']
+    seed = params['seed'] + int(random.random() * 1000)
     residual = bool(params.get('residual', True))
     sigma_noise_input = params['sigma_noise_input']
 
@@ -278,12 +279,14 @@ def main():
                 unwrapped_model = accelerator.unwrap_model(model)
                 # Save the EMA model's state dictionary
                 save_path = f"{MODEL_DIR}epoch_{epoch + 1}_mtg_meteofrance_.safetensors"
+                save_path_check = f"{MODEL_DIR}checkpoint.safetensors"
 
                 os.makedirs(MODEL_DIR, exist_ok=True)
 
                 model_to_save = getattr(unwrapped_model, '_orig_mod', unwrapped_model)
 
                 save_file(model_to_save.state_dict(), save_path)
+                save_file(model_to_save.state_dict(), save_path_check)
                 accelerator.print(f"Model saved to {save_path}")
 
 
