@@ -927,6 +927,6 @@ model_v26_mtg_europe_lightning_radar_shortcut:
     img_size: [7, 128, 128]
     patch_size: [1, 8, 8]
     embed_dim: 768
-    depth: 12
+    depth: 8
     num_heads: 12
     context_dim: 6
