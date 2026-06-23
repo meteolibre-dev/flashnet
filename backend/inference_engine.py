@@ -497,8 +497,8 @@ class InferenceEngine:
                         context_global = torch.cat(
                             [
                                 spatial_position.unsqueeze(0),
-                                t_batch_val.unsqueeze(-1),
                                 d_batch_val.unsqueeze(-1),
+                                t_batch_val.unsqueeze(-1)
                             ],
                             dim=1,
                         )
