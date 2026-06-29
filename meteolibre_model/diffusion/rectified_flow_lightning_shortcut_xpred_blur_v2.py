@@ -252,7 +252,7 @@ def trainer_step(
 
     # model predicts clean target (x-prediction)
     model_input_emp = torch.cat([x_context_t, xt_emp], dim=2)
-    context_global_emp = torch.cat([context_info_emp, t_emp.unsqueeze(1), (torch.zeros_like(t_emp)).unsqueeze(1)], dim=1)
+    context_global_emp = torch.cat([context_info_emp, (torch.zeros_like(t_emp) ).unsqueeze(1), t_emp.unsqueeze(1)], dim=1)
 
     sat_x_pred_emp, lightning_x_pred_emp = model(
         model_input_emp[:, :c_sat].float(),
@@ -270,13 +270,7 @@ def trainer_step(
         # linear: da/dt = -1  =>  empirical 1/t^2 upweighting of small t
         weight = 1.0 / (t_emp.view(b, 1, 1, 1, 1) + 1e-2) ** 2
 
-    alpha = 1.0 - t_emp
-    snr = (alpha ** 2) / (t_emp ** 2 + 1e-8)
-    gamma = 0.7
-    weight = (snr ** gamma).clamp(max=20.0)
-    weight = weight.view(b, 1, 1, 1, 1)
-    
-    #weight = weight.clamp(0.9, 10.)
+    weight = weight.clamp(0.9, 10.)
 
     # direct x-loss
     loss_sat     = (weight * (x_sat_pred_emp - x0_emp[:, :c_sat]) ** 2)[mask_emp].mean()
@@ -329,7 +323,7 @@ def full_image_generation(
             x_context_t = x_context
 
             model_input = torch.cat([x_context_t, x_t], dim=2)
-            context_global = torch.cat([context_info, t_batch.unsqueeze(1), d_batch.unsqueeze(1)], dim=1)
+            context_global = torch.cat([context_info, d_batch.unsqueeze(1), t_batch.unsqueeze(1)], dim=1)
 
             sat_x_pred, lightning_x_pred = model(
                 model_input[:, :c_sat].float(), model_input[:, c_sat:].float(), context_global.float()
