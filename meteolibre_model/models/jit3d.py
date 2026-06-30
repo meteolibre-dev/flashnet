@@ -319,12 +319,6 @@ class PatchDetailerHead3D(nn.Module):
 
         self.out = nn.Conv3d(hidden, out_channels, kernel_size=(1, 3, 3), padding=(0, 1, 1))
 
-        # Zero-init the final conv so the model starts as the vanilla global DiT
-        # and the detailer gradually learns the residual detail (stable training).
-        nn.init.zeros_(self.out.weight)
-        if self.out.bias is not None:
-            nn.init.zeros_(self.out.bias)
-
     def forward(self, global_tokens, noisy_input, grid):
         """
         global_tokens: (B, N, embed_dim)  -- DiT output tokens
