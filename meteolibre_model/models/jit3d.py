@@ -213,6 +213,166 @@ class FinalLayer(nn.Module):
         x = x.permute(0, 4, 1, 5, 2, 6, 3, 7).contiguous()
         return x.view(x.shape[0], self.out_channels, T, H, W)
 
+
+# ==============================================================================
+# == 4b. DiP-style Patch Detailer Head (local inductive bias)
+#    Ref: "DiP: Taming Diffusion Models in Pixel Space" (arXiv:2511.18822)
+#    A lightweight per-patch conv U-Net that re-injects the high-frequency
+#    local detail a pure DiT (operating on large patches) cannot represent.
+# ==============================================================================
+
+def patchify_3d(x, patch_size):
+    """x: (B, C, T, H, W) -> tokens (B, N, C*pt*ph*pw), plus grid shape."""
+    pt, ph, pw = patch_size
+    B, C, T, H, W = x.shape
+    Tp, Hp, Wp = T // pt, H // ph, W // pw
+    # (B, C, Tp, pt, Hp, ph, Wp, pw) -> (B, Tp*Hp*Wp, C*pt*ph*pw)
+    x = x.view(B, C, Tp, pt, Hp, ph, Wp, pw)
+    x = x.permute(0, 2, 4, 6, 1, 3, 5, 7).contiguous()
+    return x.view(B, Tp * Hp * Wp, C * pt * ph * pw), (Tp, Hp, Wp)
+
+
+def unpatchify_3d(tokens, patch_size, grid, out_channels):
+    """tokens: (B, N, out_channels*pt*ph*pw) -> (B, out_channels, T, H, W)."""
+    pt, ph, pw = patch_size
+    Tp, Hp, Wp = grid
+    B, N, _ = tokens.shape
+    T, H, W = Tp * pt, Hp * ph, Wp * pw
+    x = tokens.view(B, Tp, Hp, Wp, out_channels, pt, ph, pw)
+    x = x.permute(0, 4, 1, 5, 2, 6, 3, 7).contiguous()
+    return x.view(B, out_channels, T, H, W)
+
+
+class _ConvSiLU(nn.Module):
+    """Conv3d + SiLU + (optional) norm. Spatial-focused: kernel (1,k,k)."""
+    def __init__(self, c_in, c_out, k=3, groups=1):
+        super().__init__()
+        pad = k // 2
+        self.conv = nn.Conv3d(c_in, c_out, kernel_size=(1, k, k),
+                              padding=(0, pad, pad), groups=groups)
+        self.act = nn.SiLU()
+
+    def forward(self, x):
+        return self.act(self.conv(x))
+
+
+class PatchDetailerHead3D(nn.Module):
+    """
+    DiP Patch Detailer Head, 3D variant for weather (T patch dim is usually 1).
+
+    For each patch token, this lightweight conv U-Net receives:
+      - the noisy input patch  p_i  (in_channels x pt x ph x pw)
+      - the global context     s_i  (embed_dim)  -> projected + broadcast
+    and predicts the output patch (out_channels x pt x ph x pw), restoring
+    the high-frequency local detail the global DiT cannot express.
+
+    Designed for patch_size = (1, 8, 8) (i.e. 64 voxels/token). With ph=pw=8,
+    3 downsample levels (8->4->2) keep the U-Net shallow and cheap.
+    """
+    def __init__(
+        self,
+        patch_size=(1, 8, 8),
+        in_channels=3,
+        out_channels=3,
+        embed_dim=768,
+        hidden=64,
+        depth=3,            # number of spatial downsample stages
+        cond_dim=128,       # projected size of the global token before broadcast
+    ):
+        super().__init__()
+        self.patch_size = patch_size
+        self.in_channels = in_channels
+        self.out_channels = out_channels
+
+        pt, ph, pw = patch_size
+        # Spatial dims we actually downsample. Time dim is 1 in practice, so we
+        # only pool over H/W (kernel (1,2,2)) to avoid collapsing T.
+        self.spatial_d = depth if ph >= (2 ** depth) else max(0, int(math.log2(max(ph, 1))))
+
+        # Project global token s_i to a compact conditioning vector.
+        self.cond_proj = nn.Sequential(
+            nn.Linear(embed_dim, cond_dim),
+            nn.SiLU(),
+            nn.Linear(cond_dim, cond_dim),
+        )
+        self.cond_dim = cond_dim
+
+        # Encoder: fixed-width channels (lightweight, per DiP). Cond injected at bottleneck.
+        self.in_block = _ConvSiLU(in_channels, hidden)
+        self.enc = nn.ModuleList()
+        for _ in range(self.spatial_d):
+            self.enc.append(nn.ModuleList([
+                _ConvSiLU(hidden, hidden),
+                _ConvSiLU(hidden, hidden),
+            ]))
+
+        # Bottleneck: concatenate broadcast conditioning.
+        self.bottleneck = _ConvSiLU(hidden + cond_dim, hidden)
+
+        # Decoder mirrors the encoder with skip connections.
+        self.dec = nn.ModuleList()
+        for _ in range(self.spatial_d):
+            self.dec.append(nn.ModuleList([
+                _ConvSiLU(hidden * 2, hidden),   # *2 because of skip concat
+                _ConvSiLU(hidden, hidden),
+            ]))
+
+        self.out = nn.Conv3d(hidden, out_channels, kernel_size=(1, 3, 3), padding=(0, 1, 1))
+
+        # Zero-init the final conv so the model starts as the vanilla global DiT
+        # and the detailer gradually learns the residual detail (stable training).
+        nn.init.zeros_(self.out.weight)
+        if self.out.bias is not None:
+            nn.init.zeros_(self.out.bias)
+
+    def forward(self, global_tokens, noisy_input, grid):
+        """
+        global_tokens: (B, N, embed_dim)  -- DiT output tokens
+        noisy_input:   (B, C_in, T, H, W) -- original (noisy) input to the DiT
+        grid:          (Tp, Hp, Wp)
+        returns:       (B, C_out, T, H, W)
+        """
+        B, N, D = global_tokens.shape
+        pt, ph, pw = self.patch_size
+
+        # 1. Extract per-patch noisy voxels: (B, N, C_in*pt*ph*pw)
+        patch_vox, _ = patchify_3d(noisy_input, self.patch_size)   # (B, N, C_in*pt*ph*pw)
+        C_in = self.in_channels
+        patch_vox = patch_vox.view(B, N, C_in, pt, ph, pw)
+
+        # 2. Merge batch and patch axes so the U-Net runs in parallel over all patches.
+        x = patch_vox.reshape(B * N, C_in, pt, ph, pw)             # (B*N, C_in, pt, ph, pw)
+
+        # 3. Conditioning: project global token and broadcast as (cond_dim,1,1,1)
+        s = self.cond_proj(global_tokens.reshape(B * N, D))        # (B*N, cond_dim)
+        s = s.view(B * N, self.cond_dim, 1, 1, 1)
+
+        # 4. U-Net forward (spatial-only pooling)
+        skips = []
+        x = self.in_block(x)
+        for conv1, conv2 in self.enc:
+            x = conv1(x)
+            x = conv2(x)
+            skips.append(x)
+            x = F.avg_pool3d(x, kernel_size=(1, 2, 2))            # spatial downsample
+
+        x = torch.cat([x, s.expand(-1, -1, x.shape[2], x.shape[3], x.shape[4])], dim=1)
+        x = self.bottleneck(x)
+
+        for conv1, conv2 in self.dec:
+            x = F.interpolate(x, scale_factor=(1, 2, 2), mode='trilinear', align_corners=False)
+            x = torch.cat([x, skips.pop()], dim=1)
+            x = conv1(x)
+            x = conv2(x)
+
+        x = self.out(x)                                           # (B*N, C_out, pt, ph, pw)
+
+        # 5. Re-assemble patches into full volume.
+        x = x.view(B, N, self.out_channels, pt, ph, pw)
+        tokens = x.view(B, N, self.out_channels * pt * ph * pw)
+        Tp, Hp, Wp = grid
+        return unpatchify_3d(tokens, self.patch_size, grid, self.out_channels)
+
 class JiT3D_Modern(nn.Module):
     def __init__(
         self,
@@ -226,10 +386,15 @@ class JiT3D_Modern(nn.Module):
         context_dim=128,
         time_emb_dim=64,
         n_context_frames=4,         # how many frames are "context" at the start of x
-        # --- Corruption hyperparams ---
+        # --- Corruption hyperparams (latent noise for robust rollout) ---
         corruption_prob: float = 0.5,
         embed_noise_scale: float = 0.10,
         block0_noise_scale: float = 0.05,
+        # --- DiP Patch Detailer Head (arXiv:2511.18822) ---
+        use_patch_detailer=False,
+        detailer_hidden=64,
+        detailer_depth=3,
+        detailer_cond_dim=128,
     ):
         super().__init__()
         self.embed_dim = embed_dim
@@ -241,6 +406,8 @@ class JiT3D_Modern(nn.Module):
         # Total context tokens = n_context_frames × tokens_per_frame
         self.n_ctx_tokens = n_context_frames * self.tokens_per_frame
 
+        self.use_patch_detailer = use_patch_detailer
+        self.in_channels = in_channels
         # Patch Embed
         self.patch_embed = PatchEmbed3D(patch_size, in_channels, embed_dim)
 
@@ -275,6 +442,19 @@ class JiT3D_Modern(nn.Module):
             block0_noise_scale=block0_noise_scale,
         )
 
+        if use_patch_detailer:
+            self.detailer = PatchDetailerHead3D(
+                patch_size=patch_size,
+                in_channels=in_channels,
+                out_channels=out_channels,
+                embed_dim=embed_dim,
+                hidden=detailer_hidden,
+                depth=detailer_depth,
+                cond_dim=detailer_cond_dim,
+            )
+        else:
+            self.detailer = None
+
         self.initialize_weights()
 
     def initialize_weights(self):
@@ -302,6 +482,7 @@ class JiT3D_Modern(nn.Module):
         t : (B, context_dim)
         """
         B, C, T, H, W = x.shape
+        x_raw = x  # keep original noisy input for the detailer head
 
         # 1. Context conditioning
         time_val = t[:, -1]
@@ -331,8 +512,18 @@ class JiT3D_Modern(nn.Module):
                 x = self.corruptor.corrupt_block0(x, self.n_ctx_tokens)
 
         x = self.norm_final(x)
-        return self.final_layer(x, T, H, W)
 
+        # 5. Unpatchify (Predict Clean X)
+        # When the DiP Patch Detailer Head is enabled, it replaces the linear
+        # FinalLayer: it consumes the global tokens AND the original noisy input
+        # to synthesize high-frequency local detail per patch.
+        if self.detailer is not None:
+            grid = (grid_t, grid_h, grid_w)
+            x = self.detailer(x, x_raw, grid)
+        else:
+            x = self.final_layer(x, T, H, W)
+
+        return x
 
 # ==============================================================================
 # == Test

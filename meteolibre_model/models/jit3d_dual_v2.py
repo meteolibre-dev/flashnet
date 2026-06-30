@@ -25,6 +25,10 @@ class DualJiT3D(nn.Module):
         context_dim=128,
         time_emb_dim=64,
         context_frames = 4,
+        use_patch_detailer=False,
+        detailer_hidden=64,
+        detailer_depth=3,
+        detailer_cond_dim=128,
     ):
         super().__init__()
         self.sat_out_channels = sat_out_channels
@@ -40,6 +44,10 @@ class DualJiT3D(nn.Module):
             num_heads=num_heads,
             context_dim=context_dim,
             time_emb_dim=time_emb_dim,
+            use_patch_detailer=use_patch_detailer,
+            detailer_hidden=detailer_hidden,
+            detailer_depth=detailer_depth,
+            detailer_cond_dim=detailer_cond_dim,
         )
 
     def forward(self, sat_input: torch.Tensor, kpi_input: torch.Tensor, context: torch.Tensor):
@@ -64,12 +72,12 @@ if __name__ == "__main__":
         sat_out_channels=3,
         kpi_out_channels=2,
         img_size=(T, H, W),
-        patch_size=(1, 16, 16),
+        patch_size=(1, 8, 8),
         embed_dim=512,
         depth=4,
         num_heads=8,
         context_dim=128,
-        intermediate_dim=4,
+        use_patch_detailer=True,
     ).to(device)
 
     sat_input = torch.randn(B, 3, T, H, W).to(device)
