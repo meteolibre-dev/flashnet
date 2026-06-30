@@ -391,7 +391,7 @@ class JiT3D_Modern(nn.Module):
         embed_noise_scale: float = 0.10,
         block0_noise_scale: float = 0.05,
         # --- DiP Patch Detailer Head (arXiv:2511.18822) ---
-        use_patch_detailer=False,
+        use_patch_detailer=True,
         detailer_hidden=64,
         detailer_depth=3,
         detailer_cond_dim=128,

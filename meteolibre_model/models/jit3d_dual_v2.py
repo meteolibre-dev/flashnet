@@ -25,7 +25,7 @@ class DualJiT3D(nn.Module):
         context_dim=128,
         time_emb_dim=64,
         context_frames = 4,
-        use_patch_detailer=False,
+        use_patch_detailer=True,
         detailer_hidden=64,
         detailer_depth=3,
         detailer_cond_dim=128,
