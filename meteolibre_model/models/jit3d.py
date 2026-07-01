@@ -511,9 +511,30 @@ class JiT3D_Modern(nn.Module):
         # When the DiP Patch Detailer Head is enabled, it replaces the linear
         # FinalLayer: it consumes the global tokens AND the original noisy input
         # to synthesize high-frequency local detail per patch.
+        #
+        # Performance: only the FORECAST frames are detailed. The context frames'
+        # output is discarded downstream (trainer/generation slice off context),
+        # so running the per-patch U-Net over them is pure waste. We route context
+        # tokens through the cheap linear FinalLayer and stitch the two halves
+        # back together -> ~context/total fewer U-Net launches (here 4/7 -> ~43%).
         if self.detailer is not None:
-            grid = (grid_t, grid_h, grid_w)
-            x = self.detailer(x, x_raw, grid)
+            n_ctx_tok = self.n_ctx_tokens
+            ctx_tok, fcst_tok = x[:, :n_ctx_tok], x[:, n_ctx_tok:]
+
+            pt, ph, pw = self.patch_size
+            ctx_frames = self.n_context_frames
+            fcst_frames = T - ctx_frames
+            grid_fcst = (fcst_frames // pt, grid_h, grid_w)
+
+            x_raw_fcst = x_raw[:, :, ctx_frames:]
+
+            fcst_pred = self.detailer(fcst_tok, x_raw_fcst, grid_fcst)
+
+            # Context frames: cheap linear head (its output is discarded later,
+            # but we must return a full (B, C_out, T, H, W) tensor).
+            ctx_pred = self.final_layer(ctx_tok, ctx_frames, H, W)
+
+            x = torch.cat([ctx_pred, fcst_pred], dim=2)
         else:
             x = self.final_layer(x, T, H, W)
 
