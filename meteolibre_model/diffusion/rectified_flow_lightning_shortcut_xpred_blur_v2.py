@@ -114,6 +114,8 @@ def get_x_t_rf(x0, x1, t, interpolation="linear"):
     Get the interpolated point x_t based on the chosen schedule.
     - 'linear': x_t = (1 - t) * x0 + t * x1
     - 'polynomial': x_t = (1 - t^(1/2)) * x0 + t^(1/2) * x1
+    - 'bridge': handled inline in trainer_step / full_image_generation (needs
+      an extra noise draw eps), see `bridge_coeffs`.
     """
     if interpolation == "linear":
         return (1 - t) * x0 + t * x1
@@ -122,6 +124,39 @@ def get_x_t_rf(x0, x1, t, interpolation="linear"):
         return alpha * x0 + (1 - alpha) * x1
     else:
         raise ValueError(f"Unknown interpolation schedule: {interpolation}")
+
+
+def bridge_coeffs(t, sigma, sigma_min):
+    """
+    Brownian-bridge probability path coefficients (user's convention:
+    t=1 -> noise x1, t=0 -> data x0).
+
+        c_t^2   = sigma^2 * t * (1 - t) + sigma_min^2
+        c'_t/c_t = sigma^2 * (1 - 2t) / (2 * c_t^2)
+
+    The interpolant is  x_t = (1-t) x0 + t x1 + c_t * eps,
+    and the deterministic flow velocity (used at inference) is
+        v_t = (x1 - x0) + (c'_t / c_t) * (x_t - mu_t),
+    with mu_t = (1-t) x0 + t x1.
+
+    Variance is minimal (sigma_min^2) at both endpoints and maximal
+    (sigma^2/4) in the middle t=0.5, which keeps the vector-field
+    variance low for strongly-correlated spatio-temporal data and
+    enables few-step sampling. See Lim et al. 2024,
+    "Elucidating the Design Choice of Probability Paths in Flow Matching
+    for Forecasting" (arXiv:2410.03229).
+
+    Args:
+        t: scalar or tensor (any shape).
+        sigma: bridge noise scale (max extra std ~ sigma/2 at t=0.5).
+        sigma_min: small floor > 0 for numerical stability at endpoints.
+    Returns (c_t, cp_over_c) as tensors.
+    """
+    t = torch.as_tensor(t, dtype=torch.float32)
+    var = sigma ** 2 * t * (1.0 - t) + sigma_min ** 2
+    c = torch.sqrt(var)
+    cp_over_c = sigma ** 2 * (1.0 - 2.0 * t) / (2.0 * var + 1e-12)
+    return c, cp_over_c
 
 def apply_blur_with_sigma_batched(x, blur_sigma, n_bins=8, min_kernel=0, sigma_factor=3):
     """
@@ -168,7 +203,8 @@ def apply_blur_with_sigma_batched(x, blur_sigma, n_bins=8, min_kernel=0, sigma_f
 
 
 def trainer_step(
-    model, batch, device, sigma=0.0, parametrization="standard", interpolation="linear", use_residual=True
+    model, batch, device, sigma=0.0, parametrization="standard", interpolation="linear", use_residual=True,
+    bridge_sigma=0.5, bridge_sigma_min=1e-3,
 ):
     if parametrization != "standard":
         raise ValueError("Only 'standard' parametrization is supported for x-prediction.")
@@ -239,7 +275,14 @@ def trainer_step(
     else:
         x_context_t = x_context
 
-    xt_emp = get_x_t_rf(x0_emp, x1_emp, t_emp.view(num_emp,1,1,1,1), interpolation)
+    xt_emp = get_x_t_rf(x0_emp, x1_emp, t_emp.view(num_emp,1,1,1,1), interpolation) if interpolation != "bridge" else None
+    if interpolation == "bridge":
+        # x_t = (1-t) x0 + t x1 + c_t * eps,  c_t^2 = sigma^2 t(1-t) + sigma_min^2
+        c_t, _ = bridge_coeffs(t_emp, bridge_sigma, bridge_sigma_min)  # (B,)
+        tsh = t_emp.view(num_emp, 1, 1, 1, 1)
+        csh = c_t.view(num_emp, 1, 1, 1, 1)
+        eps_bb = torch.randn_like(x0_emp)
+        xt_emp = (1.0 - tsh) * x0_emp + tsh * x1_emp + csh * eps_bb
 
     # da_dt for correct v-loss weighting
     # alpha(t) = 1 - sqrt(t)  =>  da/dt = -1 / (2 * sqrt(t))
@@ -266,6 +309,11 @@ def trainer_step(
     if interpolation == "polynomial":
         # da/dt = -1/(2*sqrt(t))  =>  (da/dt)^2 ∝ 1/t
         weight = 1.0 / (t_emp.view(b,1,1,1,1) + 1e-2) ** 2
+    elif interpolation == "bridge":
+        # Bridge VF variance is already low & well-balanced; uniform x-pred
+        # MSE weighting works well (cf. Lim et al. 2024). Override by tuning
+        # if small-t detail (lightning) is under-fit.
+        weight = torch.ones_like(t_emp.view(b, 1, 1, 1, 1))
     else:
         # linear: da/dt = -1  =>  empirical 1/t^2 upweighting of small t
         weight = 1.0 / (t_emp.view(b, 1, 1, 1, 1) + 1e-2) ** 2
@@ -289,6 +337,8 @@ def full_image_generation(
     normalize_input=True,
     use_residual=True,
     schedule_power=1.0,
+    bridge_sigma=0.5,
+    bridge_sigma_min=1e-3,
 ):
     """
     Non-uniform timestep schedule for the Euler solver.
@@ -323,6 +373,8 @@ def full_image_generation(
 
         batch_size, nb_channel, nb_context, h, w = x_context.shape
         x_t = torch.randn(batch_size, nb_channel, nb_forecasted_frame, h, w, device=device)
+        # Fixed noise endpoint (the t=1 source) for the bridge solver.
+        x1_init = x_t.clone()
 
         # Non-uniform timestep grid: t descends 1 -> 0.
         u_grid = torch.linspace(0.0, 1.0, steps + 1, device=device)
@@ -350,11 +402,19 @@ def full_image_generation(
             # Euler step: x_{t-dt} = x_t - v(x_t, t) * dt
             # For linear:     alpha(t) = 1 - t      => v = (x_t - x_pred) / t
             # For polynomial: alpha(t) = 1 - sqrt(t) => v = (x_t - x_pred) / (2 * t)
-            if interpolation == "polynomial":
-                s_theta = (x_t - x_pred) / (2 * t_val + 1e-8)
+            # For bridge:     v = (x1_init - x_pred) + (c'/c)(x_t - mu_t),
+            #                 mu_t = (1-t) x_pred + t x1_init  (x1_init = fixed noise source)
+            if interpolation == "bridge":
+                _, cp_over_c = bridge_coeffs(t_val, bridge_sigma, bridge_sigma_min)
+                mu_t = (1.0 - t_val) * x_pred + t_val * x1_init
+                v_t = (x1_init - x_pred) + cp_over_c * (x_t - mu_t)
+                x_t = x_t - v_t * d_const
             else:
-                s_theta = (x_t - x_pred) / t_val
-            x_t = x_t - s_theta * d_const
+                if interpolation == "polynomial":
+                    s_theta = (x_t - x_pred) / (2 * t_val + 1e-8)
+                else:
+                    s_theta = (x_t - x_pred) / t_val
+                x_t = x_t - s_theta * d_const
             x_t = x_t.clamp(-7, 8)
 
         if use_residual:
