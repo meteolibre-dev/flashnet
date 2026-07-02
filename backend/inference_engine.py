@@ -490,7 +490,7 @@ class InferenceEngine:
                         result_noon = get_position(date_noon, lons[j], lats[j])
 
                         spatial_position = torch.tensor(
-                            [result["azimuth"], result["altitude"], result_noon["altitude"], lats[j] / 10.0],
+                            [result["azimuth"], result["altitude"], result_noon["altitude"], lats[j] / 20.0],
                             device=self.device,
                         )
 
