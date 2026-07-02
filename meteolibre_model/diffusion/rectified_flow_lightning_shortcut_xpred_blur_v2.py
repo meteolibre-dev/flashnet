@@ -288,7 +288,19 @@ def full_image_generation(
     nb_element=1,
     normalize_input=True,
     use_residual=True,
+    schedule_power=1.0,
 ):
+    """
+    Non-uniform timestep schedule for the Euler solver.
+
+    Visited nodes are t = 1 - u**schedule_power,  u in linspace(0, 1, steps+1):
+      - schedule_power = 1.0  -> uniform dt (the original behaviour)
+      - schedule_power > 1.0  -> start-heavy (finer steps near t=1, the noise end)
+      - schedule_power < 1.0  -> end-heavy  (finer steps near t=0, the data end)
+
+    The per-step dt is taken from the grid, so integration stays consistent and
+    the final state still equals the model's x-prediction at the smallest t.
+    """
     model.eval()
     with torch.no_grad():
         sat_data = batch["sat_patch_data"].permute(0, 2, 1, 3, 4)
@@ -312,12 +324,16 @@ def full_image_generation(
         batch_size, nb_channel, nb_context, h, w = x_context.shape
         x_t = torch.randn(batch_size, nb_channel, nb_forecasted_frame, h, w, device=device)
 
-        d_const = 1.0 / steps
-        t_val = 1.0
+        # Non-uniform timestep grid: t descends 1 -> 0.
+        u_grid = torch.linspace(0.0, 1.0, steps + 1, device=device)
+        t_nodes = 1.0 - u_grid ** schedule_power  # [1, ..., 0]
 
-        for _ in range(steps):
+        for i in range(steps):
+            t_val = t_nodes[i].item()
+            d_const = (t_nodes[i] - t_nodes[i + 1]).item()
+
             t_batch = torch.full((batch_size,), t_val, device=device)
-            d_batch = torch.full((batch_size,), 0., device=device)
+            d_batch = torch.full((batch_size,), d_const, device=device)
 
             # to comment if false
             x_context_t = x_context
@@ -340,8 +356,6 @@ def full_image_generation(
                 s_theta = (x_t - x_pred) / t_val
             x_t = x_t - s_theta * d_const
             x_t = x_t.clamp(-7, 8)
-
-            t_val -= d_const
 
         if use_residual:
             x_t = denormalize_residual(x_t, c_sat, device)
