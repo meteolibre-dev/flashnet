@@ -245,11 +245,13 @@ def trainer_step(
         # config). Broadcasts as (B, 1, 1, 1, 1) so it scales every element of a
         # sample's context by the same factor — preserves the spatial/temporal
         # structure, only the overall amplitude is perturbed.
+        # Applied to only 50% of samples so the model still frequently sees
+        # clean context (prevents over-regularization / loss of calibration).
         amplitude_jitter_std = 0.20
-        scale = 1.0 + amplitude_jitter_std * torch.randn(
-            b, 1, 1, 1, 1, device=device
-        )
-        x_context_t = x_context_t * scale
+        amplitude_jitter_prob = 0.5
+        jitter_mask = (torch.rand(b, device=device) < amplitude_jitter_prob).view(b, 1, 1, 1, 1)
+        scale = 1.0 + amplitude_jitter_std * torch.randn(b, 1, 1, 1, 1, device=device)
+        x_context_t = x_context_t * (jitter_mask * scale + ~jitter_mask)
     else:
         x_context_t = x_context
 
