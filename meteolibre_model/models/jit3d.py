@@ -98,21 +98,32 @@ class LatentContextCorruptor(nn.Module):
          others very high scale" failure mode.
 
     Args:
+        token_dim (int): feature dimension D of each token (embed_dim). Used to
+            convert ``noise_scale`` from a *fraction of the token's L2 norm* to
+            the actual per-element std in unit-L2 space (see below).
         corruption_prob (float): probability of applying corruption to a sample.
-        embed_noise_scale (float): noise std at embed stage (in per-token
-            unit-norm space, i.e. relative to each token's L2 norm).
-        block0_noise_scale (float): noise std at block0 stage (same units).
+        embed_noise_scale (float): noise energy at embed stage, expressed as a
+            fraction of each token's L2 norm (0.10 = noise vector norm is 10% of
+            the token norm). Internally scaled by ``1/sqrt(token_dim)`` to get
+            the per-element std.
+        block0_noise_scale (float): same, for the block0 stage.
     """
     def __init__(
         self,
+        token_dim: int,
         corruption_prob: float = 0.3,
         embed_noise_scale: float = 0.10,
         block0_noise_scale: float = 0.05,
     ):
         super().__init__()
         self.corruption_prob = corruption_prob
-        self.embed_noise_scale = embed_noise_scale
-        self.block0_noise_scale = block0_noise_scale
+        # After per-token L2 normalization each token is a unit vector, so each
+        # of its D elements has magnitude ~1/√D. A noise vector of per-element
+        # std ``s`` has total norm ~s·√D. To corrupt a fraction ``noise_scale``
+        # of the unit-norm token we therefore need s = noise_scale / √D.
+        dim_scale = 1.0 / math.sqrt(token_dim)
+        self.embed_noise_scale = embed_noise_scale * dim_scale
+        self.block0_noise_scale = block0_noise_scale * dim_scale
 
     @torch.compiler.disable
     def _corrupt(self, tokens: torch.Tensor, n_ctx: int, noise_scale: float) -> torch.Tensor:
@@ -289,6 +300,7 @@ class JiT3D_Modern(nn.Module):
 
         # ── Latent context corruptor (training only) ──────────────────────────
         self.corruptor = LatentContextCorruptor(
+            token_dim=embed_dim,
             corruption_prob=corruption_prob,
             embed_noise_scale=embed_noise_scale,
             block0_noise_scale=block0_noise_scale,
