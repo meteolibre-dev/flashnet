@@ -80,14 +80,28 @@ class LatentContextCorruptor(nn.Module):
       - Stage 'embed': right after patch_embed, before any block
       - Stage 'block0': after block 0 output, before block 1
 
-    Normalization strategy: normalize the context slice to zero-mean / unit-std
-    per sample BEFORE adding noise, then re-scale back. This prevents the model
-    from learning to output large latent magnitudes to drown out the noise.
+    Normalization strategy: **per-token L2 (power) normalization**. For each
+    context token we divide by its L2 norm along the feature dimension *before*
+    adding noise, then re-scale back. This differs from the previous global
+    mean/std normalization in two important ways:
+
+      1. The injected noise energy is identical for every token regardless of
+         that token's raw magnitude — so a low-energy token (a quiet region of
+         the field) gets the same effective corruption as a high-energy token
+         (an active convective cell). The model can no longer "hide" the
+         transmitted information in a few very-large-magnitude dimensions / tokens
+         and is forced to **spread information uniformly across the whole token
+         feature space** to be robust to corruption.
+      2. Because the norm is computed per-token (not collapsed over all
+         (n_ctx, D)), the per-dimension noise budget is shared across the entire
+         feature axis — directly targeting the "some dims are very low scale,
+         others very high scale" failure mode.
 
     Args:
         corruption_prob (float): probability of applying corruption to a sample.
-        embed_noise_scale (float): noise std at embed stage (relative to unit-norm latent).
-        block0_noise_scale (float): noise std at block0 stage (relative to unit-norm latent).
+        embed_noise_scale (float): noise std at embed stage (in per-token
+            unit-norm space, i.e. relative to each token's L2 norm).
+        block0_noise_scale (float): noise std at block0 stage (same units).
     """
     def __init__(
         self,
@@ -116,19 +130,24 @@ class LatentContextCorruptor(nn.Module):
 
         ctx = tokens[mask, :n_ctx, :]          # (B', n_ctx, D)
 
-        # --- Normalize context slice ---
-        # Per-sample mean and std over (n_ctx, D) so the noise scale is meaningful
-        # regardless of how large the latent values are at this stage
-        mean = ctx.mean(dim=(1, 2), keepdim=True)          # (B', 1, 1)
-        std  = ctx.std(dim=(1, 2), keepdim=True).clamp(min=1e-6)  # (B', 1, 1)
-        ctx_norm = (ctx - mean) / std
+        # --- Per-token power (L2) normalization ---
+        # Normalize each token independently to unit L2 norm along the feature
+        # axis. This makes the injected noise scale uniform across tokens AND
+        # across dimensions (no single dim/token can dominate the energy),
+        # forcing the model to spread information over the whole token space.
+        #
+        # `norm` is kept so we can re-scale back to the original magnitude after
+        # injecting noise (the model still sees the right latent distribution;
+        # only the *corruption* happens in normalized space).
+        norm = ctx.norm(dim=2, keepdim=True, p=2).clamp(min=1e-6)   # (B', n_ctx, 1)
+        ctx_norm = ctx / norm                                        # unit L2 per token
 
         # --- Add noise in normalized space ---
         noise = torch.randn_like(ctx_norm) * noise_scale
         ctx_corrupted_norm = ctx_norm + noise
 
-        # --- Re-scale back to original distribution ---
-        ctx_corrupted = ctx_corrupted_norm * std + mean
+        # --- Re-scale back to the original per-token magnitudes ---
+        ctx_corrupted = ctx_corrupted_norm * norm
 
         # Write back only the context slice of masked samples
         out = tokens.clone()
