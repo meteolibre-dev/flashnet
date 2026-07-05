@@ -256,22 +256,36 @@ def trainer_step(
     # eps = torch.randn(num_emp, device=device)
     # t_emp = torch.sigmoid(-0.5 + 1.2 * eps).clamp(1e-4, 1 - 1e-4)
 
-    # progressive noise
+    # On-manifold context augmentation: blur + per-sample amplitude jitter.
+    #
+    # Rationale (validated in AR_drifting/FINDINGS_MANIFOLD.md):
+    #   - The AR-rollout failure mode is exposure bias — the model at inference
+    #     feeds its own slightly-degraded outputs back as context. On structured
+    #     data the degradation looks like a *wider, lower-amplitude* version of
+    #     the true frame, NOT like isotropic per-pixel noise.
+    #   - Gaussian blur + multiplicative amplitude jitter is a plausible
+    #     on-manifold perturbation (it looks like real data, just slightly
+    #     mis-rendered) and teaches the model to sharpen/deblur a degraded
+    #     context. Pixel-space additive noise breaks the smooth profile and
+    #     causes catastrophic blur (sharpness ~0.22), so it is NOT used.
+    #   - Inference uses CLEAN context; the augmentation is train-only.
     if sigma > 0:
-        
+        # Per-sample blur strength on a logit-normal schedule (most samples get
+        # mild blur, a long tail gets stronger blur).
         eps = torch.randn(num_emp, device=device)
         t_emp_blur = torch.sigmoid(1.4 + 1.8 * eps).clamp(1e-4, 1 - 1e-4)
-
         blur_sigma = t_emp_blur * sigma  # (B,)
         x_context_t = apply_blur_with_sigma_batched(x_context, blur_sigma)
-        
-        # Random noise level per sample, uniform in [0, sigma]
-        frame_noise_rand = torch.rand(b, model.context_frames, device=device)
 
-        noise_sigma = (blur_sigma.unsqueeze(1) / sigma * 0.05 * frame_noise_rand)
-        noise_sigma = noise_sigma.view(b, 1, model.context_frames, 1, 1)
-
-        x_context_t = x_context_t + noise_sigma * torch.randn_like(x_context)
+        # Per-sample multiplicative amplitude jitter (±~20% std in the champion
+        # config). Broadcasts as (B, 1, 1, 1, 1) so it scales every element of a
+        # sample's context by the same factor — preserves the spatial/temporal
+        # structure, only the overall amplitude is perturbed.
+        amplitude_jitter_std = 0.20
+        scale = 1.0 + amplitude_jitter_std * torch.randn(
+            b, 1, 1, 1, 1, device=device
+        )
+        x_context_t = x_context_t * scale
     else:
         x_context_t = x_context
 
