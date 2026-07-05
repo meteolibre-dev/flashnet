@@ -162,7 +162,7 @@ class LatentContextCorruptor(nn.Module):
 
         # Write back only the context slice of masked samples
         out = tokens.clone()
-        out[mask, :n_ctx, :] = ctx_corrupted
+        out[mask, :n_ctx, :] = ctx_corrupted.to(tokens.dtype)
         return out
 
     def corrupt_embed(self, tokens: torch.Tensor, n_ctx: int) -> torch.Tensor:
