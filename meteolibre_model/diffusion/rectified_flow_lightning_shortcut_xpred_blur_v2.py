@@ -204,7 +204,7 @@ def apply_blur_with_sigma_batched(x, blur_sigma, n_bins=8, min_kernel=0, sigma_f
 
 def trainer_step(
     model, batch, device, sigma=0.0, parametrization="standard", interpolation="linear", use_residual=True,
-    bridge_sigma=0.5, bridge_sigma_min=1e-3,
+    bridge_sigma=0.3, bridge_sigma_min=1e-3, bridge_wclamp=10.0,
 ):
     if parametrization != "standard":
         raise ValueError("Only 'standard' parametrization is supported for x-prediction.")
@@ -324,17 +324,29 @@ def trainer_step(
 
     if interpolation == "polynomial":
         # da/dt = -1/(2*sqrt(t))  =>  (da/dt)^2 ∝ 1/t
-        weight = 1.0 / (t_emp.view(b,1,1,1,1) + 1e-2) ** 2
+        weight = (1.0 / (t_emp.view(b, 1, 1, 1, 1) + 1e-2) ** 2).clamp(0.9, 10.)
     elif interpolation == "bridge":
-        # Bridge VF variance is already low & well-balanced; uniform x-pred
-        # MSE weighting works well (cf. Lim et al. 2024). Override by tuning
-        # if small-t detail (lightning) is under-fit.
-        weight = torch.ones_like(t_emp.view(b, 1, 1, 1, 1))
+        # Bridge vloss — velocity-matching via the x-prediction
+        # reparameterization (FINDINGS_VIDEO.md "Brownian-Bridge Flow Matching").
+        #   ||v_theta - u_t||^2 = (x_pred - x0)^2 * (1 + (1-t) c'/c)^2
+        # a one-sided DATA-END upweight (huge at t->0, ~1 at t->1 and mid-path)
+        # that forces z_t usage and prevents the context-prediction collapse
+        # that plain uniform x-pred MSE falls into on easy data (FINDINGS_VIDEO.md:
+        # uniform collapses with sharp ~1.18 artifacts; vloss is REQUIRED — do
+        # NOT revert to uniform, it gives bad results).
+        #
+        # CONVENTION: this code is t=0 -> data x0, t=1 -> noise x1, the OPPOSITE
+        # of the FINDINGS_VIDEO experiment (t=0 noise, t=1 data). Under that swap
+        # the experiment's (1 - t c'/c)^2 becomes (1 + (1-t) c'/c)^2 here — both
+        # are the same physical one-sided data-end upweight. Derivation:
+        #   v_phi - u_t = (x0 - x_pred) * [1 + (1-t)(c'/c)]
+        # wclamp=10 is optimal (findings: wclamp=6 -> sharp ~1.16 artifacts).
+        _, cp_over_c = bridge_coeffs(t_emp, bridge_sigma, bridge_sigma_min)
+        wf = 1.0 + (1.0 - t_emp.view(b, 1, 1, 1, 1)) * cp_over_c.view(b, 1, 1, 1, 1)
+        weight = (wf ** 2).clamp(max=bridge_wclamp)
     else:
         # linear: da/dt = -1  =>  empirical 1/t^2 upweighting of small t
-        weight = 1.0 / (t_emp.view(b, 1, 1, 1, 1) + 1e-2) ** 2
-
-    weight = weight.clamp(0.9, 10.)
+        weight = (1.0 / (t_emp.view(b, 1, 1, 1, 1) + 1e-2) ** 2).clamp(0.9, 10.)
 
     # direct x-loss
     loss_sat     = (weight * (x_sat_pred_emp - x0_emp[:, :c_sat]) ** 2)[mask_emp].mean()
@@ -353,7 +365,7 @@ def full_image_generation(
     normalize_input=True,
     use_residual=True,
     schedule_power=1.0,
-    bridge_sigma=0.5,
+    bridge_sigma=0.3,
     bridge_sigma_min=1e-3,
 ):
     """
