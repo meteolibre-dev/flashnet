@@ -427,16 +427,26 @@ def full_image_generation(
 
             x_pred = torch.cat([sat_x_pred, lightning_x_pred], dim=1)[:, :, model.context_frames:]
 
-            # Euler step: x_{t-dt} = x_t - v(x_t, t) * dt
-            # For linear:     alpha(t) = 1 - t      => v = (x_t - x_pred) / t
-            # For polynomial: alpha(t) = 1 - sqrt(t) => v = (x_t - x_pred) / (2 * t)
-            # For bridge:     v = (x1_init - x_pred) + (c'/c)(x_t - mu_t),
-            #                 mu_t = (1-t) x_pred + t x1_init  (x1_init = fixed noise source)
+            # Integration step.
+            # linear/polynomial: Euler  x_{t-dt} = x_t - v*dt
+            #   linear:      v = (x_t - x_pred) / t
+            #   polynomial:  v = (x_t - x_pred) / (2*t)
+            # bridge: EXACT closed-form ODE step (NOT Euler). Naive Euler with the
+            #   bridge velocity diverges via c'/c near the data end
+            #   (cp_over_c ~ sigma^2/(2 sigma_min^2) ~ 1e4, lambda*dt >> 2). The
+            #   exact step absorbs the stiff c'/c mean-reversion into an O(1)
+            #   c_next/c_t ratio:
+            #     x_{t_next} = mu_next + (x_t - mu_t) * c(t_next)/c(t)
+            #     mu_t     = (1-t)      x_pred + t      x1_init
+            #     mu_next  = (1-t_next) x_pred + t_next x1_init
             if interpolation == "bridge":
-                _, cp_over_c = bridge_coeffs(t_val, bridge_sigma, bridge_sigma_min)
+                t_next = t_val - d_const
+                c_t, _ = bridge_coeffs(t_val, bridge_sigma, bridge_sigma_min)
+                c_next, _ = bridge_coeffs(t_next, bridge_sigma, bridge_sigma_min)
+                ratio = (c_next / c_t).item()
                 mu_t = (1.0 - t_val) * x_pred + t_val * x1_init
-                v_t = (x1_init - x_pred) + cp_over_c * (x_t - mu_t)
-                x_t = x_t - v_t * d_const
+                mu_next = (1.0 - t_next) * x_pred + t_next * x1_init
+                x_t = mu_next + (x_t - mu_t) * ratio
             else:
                 if interpolation == "polynomial":
                     s_theta = (x_t - x_pred) / (2 * t_val + 1e-8)
