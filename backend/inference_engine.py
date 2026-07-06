@@ -40,6 +40,7 @@ from meteolibre_model.diffusion.rectified_flow_lightning_shortcut_xpred_blur_v2 
     normalize,
     denormalize,
     CLIP_MIN,
+    bridge_coeffs,
 )
 from safetensors.torch import load_file
 
@@ -173,6 +174,8 @@ class InferenceEngine:
         context_frames: int = 4,
         use_residual: bool = False,
         interpolation: str = "linear",
+        bridge_sigma: float = 0.3,
+        bridge_sigma_min: float = 1e-3,
         device: Optional[str] = None
     ):
         """Initialize the inference engine.
@@ -185,6 +188,11 @@ class InferenceEngine:
             batch_size: Batch size for processing patches
             context_frames: Number of context frames
             use_residual: Whether to use residual connections
+            interpolation: "linear" (rectified flow), "polynomial", or "bridge"
+                (Brownian-bridge flow matching).
+            bridge_sigma: Bridge noise scale (used only if interpolation="bridge").
+            bridge_sigma_min: Bridge endpoint variance floor (used only if
+                interpolation="bridge").
             device: Device to run inference on (auto-detected if None)
         """
         self.model_path = model_path
@@ -195,6 +203,8 @@ class InferenceEngine:
         self.context_frames = context_frames
         self.use_residual = use_residual
         self.interpolation = interpolation
+        self.bridge_sigma = bridge_sigma
+        self.bridge_sigma_min = bridge_sigma_min
 
         if device is None:
             self.device = "cuda" if torch.cuda.is_available() else "cpu"
@@ -375,6 +385,9 @@ class InferenceEngine:
 
         _, C, T_ctx, H_big, W_big = initial_context.shape
         x_t_full_res = torch.randn(1, C, nb_forecast, H_big, W_big, device=self.device)
+        # Bridge flow matching: keep the fixed noise endpoint (t=1 source). The
+        # exact ODE step references it at every denoising step.
+        x1_init = x_t_full_res.clone() if self.interpolation == "bridge" else None
 
         patch_weights = self._get_gaussian_weights(self.patch_size)
         patch_weights = patch_weights.view(1, 1, 1, self.patch_size, self.patch_size)
@@ -441,7 +454,7 @@ class InferenceEngine:
             for i in tqdm(range(self.denoising_steps), desc="Denoising"):
                 torch.cuda.empty_cache()
                 # Use bfloat16 for accumulation to save memory
-                aggregated_velocity = torch.zeros(
+                aggregated_x_pred = torch.zeros(
                     1, C, this_nb, H_big, W_big, device=self.device, dtype=torch.bfloat16
                 )
                 weights_sum = torch.zeros(
@@ -536,24 +549,15 @@ class InferenceEngine:
                     pw = patch_weights.to(torch.bfloat16)
 
                     for j, (x_start, y_start) in enumerate(coords_batch):
-                        x_t_patch = x_t_full_res[
+                        # Aggregate the model prediction x_pred across overlapping
+                        # patches. For RF this is equivalent to aggregating velocity
+                        # (v is linear in x_pred); for the bridge it lets us use the
+                        # exact closed-form ODE step instead of divergent Euler.
+                        aggregated_x_pred[
                             ...,
                             y_start : y_start + self.patch_size,
                             x_start : x_start + self.patch_size,
-                        ].to(torch.bfloat16)
-
-                        # s_theta = (x_t - x_pred) / t  (linear)
-                        # s_theta = (x_t - x_pred) / (2 * t)  (polynomial)
-                        if self.interpolation == "polynomial":
-                            v_patch = (x_t_patch - x_pred_batch[j : j + 1]) / (2 * t_val + 1e-8)
-                        else:
-                            v_patch = (x_t_patch - x_pred_batch[j : j + 1]) / t_val
-
-                        aggregated_velocity[
-                            ...,
-                            y_start : y_start + self.patch_size,
-                            x_start : x_start + self.patch_size,
-                        ] += v_patch * pw
+                        ] += x_pred_batch[j : j + 1] * pw
 
                         weights_sum[
                             ...,
@@ -564,18 +568,42 @@ class InferenceEngine:
 
                 weights_sum[weights_sum == 0] = 1.0
                 # In-place average in bfloat16 to save memory
-                aggregated_velocity.div_(weights_sum)
+                aggregated_x_pred.div_(weights_sum)
 
                 # Convert back to float32 for the update step
-                # We do it this way to ensure high precision for the Euler step
-                averaged_velocity = aggregated_velocity.float()
-                del aggregated_velocity, weights_sum
+                averaged_x_pred = aggregated_x_pred.float()
+                del aggregated_x_pred, weights_sum
 
-                # x_t = x_t - s_theta * dt
-                x_t_full_res.sub_(averaged_velocity, alpha=dt)
+                if self.interpolation == "bridge":
+                    # Exact closed-form bridge ODE step — absorbs the stiff c'/c
+                    # mean-reversion into an O(1) c_next/c_t ratio. Naive Euler
+                    # with the bridge velocity diverges near the data end
+                    # (cp_over_c ~ sigma^2/(2 sigma_min^2) ~ 1e4, lambda*dt >> 2).
+                    #   x_{t_next} = mu_next + (x_t - mu_t) * c_next/c_t
+                    #   mu_t     = (1-t)      x_pred + t      x1_init
+                    #   mu_next  = (1-t_next) x_pred + t_next x1_init
+                    t_next = max(t_val - dt, 0.0)
+                    c_t, _ = bridge_coeffs(t_val, self.bridge_sigma, self.bridge_sigma_min)
+                    c_next, _ = bridge_coeffs(t_next, self.bridge_sigma, self.bridge_sigma_min)
+                    ratio = (c_next / c_t).item()
+                    mu_t = (1.0 - t_val) * averaged_x_pred + t_val * x1_init
+                    mu_next = (1.0 - t_next) * averaged_x_pred + t_next * x1_init
+                    del averaged_x_pred
+                    # In-place: x_t = mu_next + (x_t - mu_t) * ratio
+                    x_t_full_res.sub_(mu_t).mul_(ratio).add_(mu_next)
+                    del mu_t, mu_next
+                else:
+                    # RF Euler step from the aggregated prediction (equivalent to
+                    # averaging velocity, since v is linear in x_pred).
+                    if self.interpolation == "polynomial":
+                        averaged_velocity = (x_t_full_res - averaged_x_pred) / (2 * t_val + 1e-8)
+                    else:  # linear
+                        averaged_velocity = (x_t_full_res - averaged_x_pred) / t_val
+                    del averaged_x_pred
+                    x_t_full_res.sub_(averaged_velocity, alpha=dt)
+                    del averaged_velocity
+
                 x_t_full_res.clamp_(-7, 7)
-
-                del averaged_velocity
 
             torch.cuda.empty_cache()
 
@@ -614,9 +642,12 @@ class InferenceEngine:
             torch.cuda.empty_cache()
             current_high_res_context = new_context
 
+            if x1_init is not None:
+                del x1_init
             del x_t_full_res
             torch.cuda.empty_cache()
             x_t_full_res = torch.randn(1, C, nb_forecast, H_big, W_big, device=self.device)
+            x1_init = x_t_full_res.clone() if self.interpolation == "bridge" else None
             current_step += this_nb
 
     def _save_timestep_files(
