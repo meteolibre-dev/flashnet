@@ -269,7 +269,15 @@ def trainer_step(
     #     context. Pixel-space additive noise breaks the smooth profile and
     #     causes catastrophic blur (sharpness ~0.22), so it is NOT used.
     #   - Inference uses CLEAN context; the augmentation is train-only.
-    if sigma > 0:
+    #
+    # DISABLED for the bridge. FINDINGS_VIDEO.md ("manifold_noise + bridge:
+    # HURTS"): the bridge ALREADY regularizes the target via its mid-path
+    # Brownian noise + clean endpoint; layering blur/jitter context aug on top
+    # over-corrupts (rollout ED 1103 -> 1732) and produces exactly the
+    # blurrier-over-rollouts failure the bridge is meant to prevent. Use ONE
+    # regularization mechanism, not both. (sigma here is the context-aug blur
+    # scale; bridge_sigma is the separate path-noise parameter.)
+    if sigma > 0 and interpolation != "bridge":
         # Per-sample blur strength on a logit-normal schedule (most samples get
         # mild blur, a long tail gets stronger blur).
         eps = torch.randn(num_emp, device=device)
