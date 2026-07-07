@@ -379,6 +379,8 @@ class InferenceEngine:
         """
         if self.model is None:
             raise RuntimeError("Model not loaded")
+        
+        print("interpolation :", self.interpolation)
 
         self.model.eval()
         self.model.to(self.device)
