@@ -15,12 +15,13 @@ from accelerate.utils import set_seed
 from tqdm.auto import tqdm
 from datetime import datetime
 import yaml
+from contextlib import contextmanager, nullcontext
 
 from accelerate.utils import DistributedDataParallelKwargs
 from safetensors.torch import save_file
 
 # 
-from torch.optim import Muon
+#from torch.optim import Muon
 
 from safetensors.torch import load_file
 
@@ -41,6 +42,58 @@ config_path = os.path.join(project_root, "meteolibre_model/config/configs.yml")
 with open(config_path) as f:
     config = yaml.safe_load(f)
 params = config['model_v24_mtg_europe_lightning_radar_shortcut']
+
+
+class EMAModel:
+    """
+    Exponential Moving Average of model weights.
+
+    Smooths the high-frequency weight oscillations that bf16 + an aggressive LR
+    induce late in training. EMA does NOT lower the train loss (that is computed
+    with the raw weights) — it improves SAMPLE quality, noticeably for few-step
+    sampling and autoregressive rollouts where weight noise compounds across
+    steps.
+
+    Usage:
+        ema = EMAModel(model.parameters(), decay=0.9999)
+        ema.update(model.parameters())      # after each optimizer.step()
+        with ema.swap(model.parameters()):  # eval / save with EMA weights
+            ...
+
+    - shadow params stored in fp32 for accurate accumulation, cast back to each
+      param's native dtype when swapped in.
+    - warmup: effective decay = min(decay, (1+step)/(10+step)). Early on (weights
+      moving fast) the EMA tracks the raw model closely; as training stabilizes
+      it ramps up to `decay` for strong smoothing. Shadow is initialized to the
+      params themselves, so no Adam-style bias correction is needed.
+    - decay=0.9999 ~= half-life of ~7000 updates (~6 epochs at ~1172 optimizer
+      steps/epoch with this config).
+    """
+
+    def __init__(self, parameters, decay=0.9999):
+        self.decay = decay
+        self.num_updates = 0
+        self.shadow_params = [p.detach().to(torch.float32).clone() for p in parameters]
+
+    @torch.no_grad()
+    def update(self, parameters):
+        self.num_updates += 1
+        d = min(self.decay, (1.0 + self.num_updates) / (10.0 + self.num_updates))
+        for s, p in zip(self.shadow_params, parameters):
+            s.mul_(d).add_(p.detach().to(torch.float32), alpha=1.0 - d)
+
+    @contextmanager
+    def swap(self, parameters):
+        """Temporarily copy EMA weights into `parameters` (in-place on .data),
+        yield, then restore the originals."""
+        backup = [p.detach().clone() for p in parameters]
+        try:
+            for p, s in zip(parameters, self.shadow_params):
+                p.data.copy_(s.to(p.dtype))
+            yield
+        finally:
+            for p, b in zip(parameters, backup):
+                p.data.copy_(b)
 
 
 def main():
@@ -71,6 +124,10 @@ def main():
     sigma_noise_input = params['sigma_noise_input']
 
     print("sigma_noise_input: ", sigma_noise_input)
+
+    ema_enabled = bool(params.get('ema_enabled', True))
+    ema_decay = float(params.get('ema_decay', 0.9999))
+    print(f"EMA: enabled={ema_enabled}, decay={ema_decay}")
 
     gradient_clip_value = params['gradient_clip_value']
     id_run = str(datetime.utcnow())[:19]
@@ -143,21 +200,19 @@ def main():
         print("Jit model")
         model = DualJiT3D(**model_params)
 
-        # model_path = "models/epoch_91_mtg_meteofrance_.safetensors"
-        #state_dict = load_file(model_path)
-        #model.load_state_dict(state_dict)
+        model_path = "models/checkpoint.safetensors"
+        state_dict = load_file(model_path)
+        model.load_state_dict(state_dict)
 
-        model = torch.compile(model)
-
-        # here we 
+        model = torch.compile(model) 
 
         # Split params: Muon only accepts strictly 2D tensors
         muon_params, adamw_params = get_grouped_params(model)
         
         # 1. Muon for Transformer Internals (Matrices)
         # Note: Adjust momentum/nesterov args as per your Heavyball version if needed
-        opt_muon = Muon(muon_params, lr=learning_rate, momentum=0.95, weight_decay=0.1)
-        
+        # opt_muon = Muon(muon_params, lr=learning_rate, momentum=0.95, weight_decay=0.1)
+        opt_muon = torch.optim.AdamW(muon_params, lr=learning_rate, weight_decay=0.01)
         # 2. AdamW for Conv3d, Embeddings, Norms, Biases
         # Usually AdamW needs a lower LR than Muon
         opt_adam = torch.optim.AdamW(adamw_params, lr=learning_rate / 3, weight_decay=0.01)
@@ -174,6 +229,14 @@ def main():
 
     if isinstance(optimizer, list):
         optimizer = CombinedOptimizer(optimizer)
+
+    # ---- EMA of weights (improves sample quality, not train loss) ----
+    ema = None
+    if ema_enabled:
+        _raw = accelerator.unwrap_model(model)
+        _raw = getattr(_raw, '_orig_mod', _raw)
+        ema = EMAModel(list(_raw.parameters()), decay=ema_decay)
+        print(f"EMA tracking {len(ema.shadow_params)} param tensors")
 
     global_step = 0
 
@@ -204,6 +267,12 @@ def main():
                 optimizer.zero_grad()
 
                 global_step += 1
+
+                # EMA update — once per real optimizer step (grad-accum boundary)
+                if ema is not None and accelerator.sync_gradients:
+                    _raw = accelerator.unwrap_model(model)
+                    _raw = getattr(_raw, '_orig_mod', _raw)
+                    ema.update(_raw.parameters())
 
                 if global_step % LOG_EVERY_N_STEPS == 0:
                     if accelerator.is_main_process:
@@ -239,15 +308,19 @@ def main():
                 # x_target = normalize(x_target, device)
 
                 unwrapped_model = accelerator.unwrap_model(model)
-                generated_images, x_target = full_image_generation(
-                    unwrapped_model,
-                    batch,
-                    steps=128,
-                    device=accelerator.device,
-                    parametrization=PARAMETRIZATION,
-                    interpolation=INTERPOLATION,
-                    use_residual=residual
-                )
+                # eval on the raw (un-compiled) module with EMA weights swapped in
+                eval_model = getattr(unwrapped_model, '_orig_mod', unwrapped_model)
+                swap_ctx = ema.swap(list(eval_model.parameters())) if ema is not None else nullcontext()
+                with swap_ctx:
+                    generated_images, x_target = full_image_generation(
+                        eval_model,
+                        batch,
+                        steps=128,
+                        device=accelerator.device,
+                        parametrization=PARAMETRIZATION,
+                        interpolation=INTERPOLATION,
+                        use_residual=residual
+                    )
 
                 # Select one channel and one batch item for visualization
                 generated_sample = generated_images[0, 17]  # Shape: (1, H, W)
@@ -277,17 +350,28 @@ def main():
             accelerator.wait_for_everyone()
             if accelerator.is_main_process:
                 unwrapped_model = accelerator.unwrap_model(model)
-                # Save the EMA model's state dictionary
+                model_to_save = getattr(unwrapped_model, '_orig_mod', unwrapped_model)
+
                 save_path = f"{MODEL_DIR}epoch_{epoch + 1}_mtg_meteofrance_.safetensors"
                 save_path_check = f"{MODEL_DIR}checkpoint.safetensors"
+                save_path_raw = f"{MODEL_DIR}epoch_{epoch + 1}_mtg_meteofrance__raw.safetensors"
 
                 os.makedirs(MODEL_DIR, exist_ok=True)
 
-                model_to_save = getattr(unwrapped_model, '_orig_mod', unwrapped_model)
+                # Always keep the raw (training) weights
+                save_file(model_to_save.state_dict(), save_path_raw)
 
-                save_file(model_to_save.state_dict(), save_path)
-                save_file(model_to_save.state_dict(), save_path_check)
-                accelerator.print(f"Model saved to {save_path}")
+                # EMA weights are the primary deploy checkpoint (sharper / more
+                # stable sampling). Falls back to raw if EMA disabled.
+                if ema is not None:
+                    with ema.swap(list(model_to_save.parameters())):
+                        save_file(model_to_save.state_dict(), save_path)
+                        save_file(model_to_save.state_dict(), save_path_check)
+                    accelerator.print(f"Model saved (EMA) to {save_path}")
+                else:
+                    save_file(model_to_save.state_dict(), save_path)
+                    save_file(model_to_save.state_dict(), save_path_check)
+                    accelerator.print(f"Model saved to {save_path}")
 
 
         accelerator.wait_for_everyone()
@@ -296,8 +380,15 @@ def main():
     # Save the model
     accelerator.wait_for_everyone()
     if accelerator.is_main_process:
-        torch.save(model.state_dict(), "meteolibre_model_rectified_flow.pth")
-        print("Training complete. Model saved to meteolibre_model_rectified_flow.pth")
+        unwrapped_model = accelerator.unwrap_model(model)
+        model_to_save = getattr(unwrapped_model, '_orig_mod', unwrapped_model)
+        if ema is not None:
+            with ema.swap(list(model_to_save.parameters())):
+                save_file(model_to_save.state_dict(), f"{MODEL_DIR}final_mtg_meteofrance_ema.safetensors")
+            print("Training complete. EMA model saved.")
+        else:
+            torch.save(model.state_dict(), "meteolibre_model_rectified_flow.pth")
+            print("Training complete. Model saved to meteolibre_model_rectified_flow.pth")
 
 
 if __name__ == "__main__":
