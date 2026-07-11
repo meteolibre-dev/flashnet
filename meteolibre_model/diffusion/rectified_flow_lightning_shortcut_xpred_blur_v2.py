@@ -205,6 +205,7 @@ def apply_blur_with_sigma_batched(x, blur_sigma, n_bins=8, min_kernel=0, sigma_f
 def trainer_step(
     model, batch, device, sigma=0.0, parametrization="standard", interpolation="linear", use_residual=True,
     bridge_sigma=0.3, bridge_sigma_min=1e-3, bridge_wclamp=10.0,
+    grad_weight=0.0,
 ):
     if parametrization != "standard":
         raise ValueError("Only 'standard' parametrization is supported for x-prediction.")
@@ -360,7 +361,34 @@ def trainer_step(
     loss_sat     = (weight * (x_sat_pred_emp - x0_emp[:, :c_sat]) ** 2)[mask_emp].mean()
     loss_lightning = (weight * (x_light_pred_emp - x0_emp[:, c_sat:]) ** 2).mean()
 
-    return loss_sat + 5.0 * loss_lightning, loss_sat, loss_lightning
+    # --- Horizontal-gradient regularization (FastNet-style artifact suppressor) ---
+    # Adapted from Dunstan et al. 2026 (FastNet, AIES-D-25-0090.1): penalize
+    # mismatches in the spatial derivatives (∂/∂y, ∂/∂x) of the predicted field
+    # vs the target. FastNet credits this as the PRIMARY lever for suppressing
+    # the nonphysical artifacts that compound during autoregressive rollout.
+    # Applied here on the x-prediction (clean denoised field) and weighted by
+    # the same per-t factor as the main x-loss, so it focuses on data-end
+    # predictions (t→0) where gradients are meaningful and barely penalizes
+    # near-noise samples (t→1). grad_weight=0 disables it (backward compatible).
+    if grad_weight > 0:
+        # sat spatial gradients on (H, W) dims, masked like the main sat loss
+        gy_sp, gx_sp = torch.gradient(x_sat_pred_emp, dim=(-2, -1))
+        gy_st, gx_st = torch.gradient(x0_emp[:, :c_sat], dim=(-2, -1))
+        grad_err_sat = (gy_sp - gy_st) ** 2 + (gx_sp - gx_st) ** 2
+        loss_grad_sat = (weight * grad_err_sat)[mask_emp].mean()
+
+        # lightning spatial gradients (no mask)
+        gy_lp, gx_lp = torch.gradient(x_light_pred_emp, dim=(-2, -1))
+        gy_lt, gx_lt = torch.gradient(x0_emp[:, c_sat:], dim=(-2, -1))
+        grad_err_light = (gy_lp - gy_lt) ** 2 + (gx_lp - gx_lt) ** 2
+        loss_grad_light = (weight * grad_err_light).mean()
+    else:
+        loss_grad_sat = torch.tensor(0.0, device=device)
+        loss_grad_light = torch.tensor(0.0, device=device)
+
+    total = (loss_sat + 5.0 * loss_lightning
+             + grad_weight * (loss_grad_sat + 5.0 * loss_grad_light))
+    return total, loss_sat, loss_lightning
 
 def full_image_generation(
     model,
