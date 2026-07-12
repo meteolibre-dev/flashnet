@@ -234,7 +234,17 @@ def trainer_step(
 
     context_info = batch["spatial_position"]
 
-    x1 = torch.randn_like(x0)
+    # Bridge endpoint: instead of bridging from pure noise (t=1 -> noise),
+    # anchor the t=1 endpoint on the last known context frame so the model
+    # learns to predict the forecast starting from the most recent observation.
+    # NOTE: intended for use_residual=False, where x0 (forecast frames) and the
+    # context are in the same normalized space. With residuals the endpoint
+    # would mix spaces — do not combine bridge + residual.
+    if interpolation == "bridge":
+        last_context = x_context[:, :, model.context_frames - 1:model.context_frames]
+        x1 = last_context.expand_as(x0)
+    else:
+        x1 = torch.randn_like(x0)
 
     loss_sat = loss_lightning = 0.0
 
@@ -436,9 +446,19 @@ def full_image_generation(
         context_info = batch["spatial_position"].to(device)[0:nb_element]
 
         batch_size, nb_channel, nb_context, h, w = x_context.shape
-        x_t = torch.randn(batch_size, nb_channel, nb_forecasted_frame, h, w, device=device)
-        # Fixed noise endpoint (the t=1 source) for the bridge solver.
-        x1_init = x_t.clone()
+        if interpolation == "bridge":
+            # Bridge from the last known context frame (t=1) to the forecast
+            # (t=0) instead of from pure noise. The initial state and the fixed
+            # endpoint are both the last observation, broadcast across forecast
+            # frames.
+            last_ctx_expanded = last_context.expand(
+                batch_size, nb_channel, nb_forecasted_frame, h, w
+            )
+            x_t = last_ctx_expanded.clone()
+            x1_init = last_ctx_expanded.clone()
+        else:
+            x_t = torch.randn(batch_size, nb_channel, nb_forecasted_frame, h, w, device=device)
+            x1_init = x_t.clone()
 
         # Non-uniform timestep grid: t descends 1 -> 0.
         u_grid = torch.linspace(0.0, 1.0, steps + 1, device=device)
