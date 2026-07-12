@@ -38,6 +38,7 @@ class ModelConfig(BaseModel):
     use_residual: bool = False
     parametrization: str = "standard"
     interpolation: str = "linear"
+    inference_seed: Optional[int] = None
     debug_endpoint_t_values: Optional[str] = None  # comma-sep, e.g. "0.9,0.8,...,0.0"
 
 
@@ -95,6 +96,11 @@ class Config(BaseModel):
                 context_frames=int(os.getenv("CONTEXT_FRAMES", 4)),
                 use_residual=os.getenv("USE_RESIDUAL", "False").lower() == "true",
                 interpolation=os.getenv("INTERPOLATION", "linear"),
+                inference_seed=(
+                    int(os.environ["INFERENCE_SEED"])
+                    if os.getenv("INFERENCE_SEED") not in (None, "")
+                    else None
+                ),
                 debug_endpoint_t_values=os.getenv("DEBUG_ENDPOINT_T_VALUES"),
             ),
             server=ServerConfig(

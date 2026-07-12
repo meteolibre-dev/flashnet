@@ -176,6 +176,7 @@ class InferenceEngine:
         interpolation: str = "linear",
         bridge_sigma: float = 0.3,
         bridge_sigma_min: float = 1e-3,
+        inference_seed: Optional[int] = None,
         device: Optional[str] = None
     ):
         """Initialize the inference engine.
@@ -193,6 +194,7 @@ class InferenceEngine:
             bridge_sigma: Bridge noise scale (used only if interpolation="bridge").
             bridge_sigma_min: Bridge endpoint variance floor (used only if
                 interpolation="bridge").
+            inference_seed: Optional seed for reproducible initial RF noise.
             device: Device to run inference on (auto-detected if None)
         """
         self.model_path = model_path
@@ -205,6 +207,7 @@ class InferenceEngine:
         self.interpolation = interpolation
         self.bridge_sigma = bridge_sigma
         self.bridge_sigma_min = bridge_sigma_min
+        self.inference_seed = inference_seed
 
         if device is None:
             self.device = "cuda" if torch.cuda.is_available() else "cpu"
@@ -391,7 +394,18 @@ class InferenceEngine:
         self.model.to(self.device)
 
         _, C, T_ctx, H_big, W_big = initial_context.shape
-        x_t_full_res = torch.randn(1, C, nb_forecast, H_big, W_big, device=self.device)
+        noise_generator = None
+        if self.inference_seed is not None:
+            generator_device = "cuda" if str(self.device).startswith("cuda") else "cpu"
+            noise_generator = torch.Generator(device=generator_device)
+            noise_generator.manual_seed(self.inference_seed)
+            logger.info(f"Using inference noise seed {self.inference_seed}")
+
+        x_t_full_res = torch.randn(
+            1, C, nb_forecast, H_big, W_big,
+            device=self.device,
+            generator=noise_generator,
+        )
         # Bridge flow matching: keep the fixed noise endpoint (t=1 source). The
         # exact ODE step references it at every denoising step.
         x1_init = x_t_full_res.clone() if self.interpolation == "bridge" else None
@@ -679,7 +693,11 @@ class InferenceEngine:
                 del x1_init
             del x_t_full_res
             torch.cuda.empty_cache()
-            x_t_full_res = torch.randn(1, C, nb_forecast, H_big, W_big, device=self.device)
+            x_t_full_res = torch.randn(
+                1, C, nb_forecast, H_big, W_big,
+                device=self.device,
+                generator=noise_generator,
+            )
             x1_init = x_t_full_res.clone() if self.interpolation == "bridge" else None
             current_step += this_nb
 
