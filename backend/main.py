@@ -115,10 +115,21 @@ def run_inference(data_path: str, gcs_client=None) -> str:
         def upload_fn(filepath: str):
             try:
                 filepath = Path(filepath)
-                dest_blob = f"{config.gcp.dest_prefix}/{h5_date_prefix}/{h5_datetime_str}/{filepath.name}"
+                # Preserve the debug_endpoints/ subdirectory in the blob path
+                # so debug snapshots land in their own folder in the bucket.
+                subdir = "debug_endpoints/" if filepath.parent.name == "debug_endpoints" else ""
+                dest_blob = f"{config.gcp.dest_prefix}/{h5_date_prefix}/{h5_datetime_str}/{subdir}{filepath.name}"
                 gcs_client.upload_file(str(filepath), dest_blob)
             except Exception:
                 logger.exception(f"Failed to upload {filepath}")
+
+    # Parse debug endpoint t-values (comma-separated string -> list[float])
+    debug_t_values = None
+    if config.model.debug_endpoint_t_values:
+        debug_t_values = [
+            float(x.strip()) for x in config.model.debug_endpoint_t_values.split(",") if x.strip()
+        ]
+        logger.info(f"Debug endpoint snapshots enabled at t={debug_t_values}")
 
     result = engine.run_inference(
         data_path=data_path,
@@ -126,6 +137,7 @@ def run_inference(data_path: str, gcs_client=None) -> str:
         forecast_steps=config.model.forecast_steps,
         nb_forecast=config.model.nb_forecast,
         upload_fn=upload_fn,
+        debug_endpoint_t_values=debug_t_values,
     )
 
     if result.status.value != "completed":

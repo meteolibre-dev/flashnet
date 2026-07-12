@@ -38,6 +38,7 @@ class ModelConfig(BaseModel):
     use_residual: bool = False
     parametrization: str = "standard"
     interpolation: str = "linear"
+    debug_endpoint_t_values: Optional[str] = None  # comma-sep, e.g. "0.9,0.8,...,0.0"
 
 
 class ServerConfig(BaseModel):
@@ -94,6 +95,7 @@ class Config(BaseModel):
                 context_frames=int(os.getenv("CONTEXT_FRAMES", 4)),
                 use_residual=os.getenv("USE_RESIDUAL", "False").lower() == "true",
                 interpolation=os.getenv("INTERPOLATION", "linear"),
+                debug_endpoint_t_values=os.getenv("DEBUG_ENDPOINT_T_VALUES"),
             ),
             server=ServerConfig(
                 host=os.getenv("SERVER_HOST", "0.0.0.0"),
