@@ -359,6 +359,11 @@ class InferenceEngine:
         c_sat: int = 18,
         c_lightning: int = 2,
         c_radar: int = 1,
+        debug_endpoint_t_values: Optional[list[float]] = None,
+        debug_upload_fn: Optional[Callable[[str], None]] = None,
+        debug_geo_transform=None,
+        debug_crs: str = "EPSG:4326",
+        debug_crop_range: Optional[slice] = None,
     ) -> Generator[tuple[torch.Tensor, torch.Tensor, torch.Tensor], None, None]:
         """Run tiled inference for weather forecasting.
 
@@ -440,6 +445,15 @@ class InferenceEngine:
         half_steps = self.denoising_steps // 2
         current_step = 0
         current_high_res_context = initial_context
+
+        # Debug: map each target t (0.9, 0.8, ...) to the closest denoising
+        # step index so we can snapshot the endpoint prediction there.
+        debug_step_map: dict[int, float] = {}
+        if debug_endpoint_t_values:
+            for tv in debug_endpoint_t_values:
+                idx = round((1.0 - tv) * self.denoising_steps)
+                idx = min(idx, self.denoising_steps - 1)
+                debug_step_map[idx] = tv
 
         while current_step < forecast_steps:
             remaining = forecast_steps - current_step
@@ -576,6 +590,23 @@ class InferenceEngine:
                 averaged_x_pred = aggregated_x_pred.float()
                 del aggregated_x_pred, weights_sum
 
+                # Debug: snapshot the full-Europe endpoint prediction (x0-hat)
+                # at the target t values during the first AR step.
+                if (debug_endpoint_t_values is not None
+                        and current_step == 0
+                        and i in debug_step_map):
+                    self._save_debug_endpoint(
+                        averaged_x_pred,
+                        debug_step_map[i],
+                        c_sat,
+                        output_dir or ".",
+                        prediction_date,
+                        debug_geo_transform,
+                        debug_crs,
+                        debug_crop_range or slice(None),
+                        debug_upload_fn,
+                    )
+
                 if self.interpolation == "bridge":
                     # Exact closed-form bridge ODE step — absorbs the stiff c'/c
                     # mean-reversion into an O(1) c_next/c_t ratio. Naive Euler
@@ -652,6 +683,58 @@ class InferenceEngine:
             x1_init = x_t_full_res.clone() if self.interpolation == "bridge" else None
             current_step += this_nb
 
+    def _save_debug_endpoint(
+        self,
+        x_pred: torch.Tensor,
+        t_val: float,
+        c_sat: int,
+        output_dir: str,
+        pred_date: datetime,
+        geo_transform,
+        crs: str,
+        crop_range: slice,
+        upload_fn: Optional[Callable[[str], None]] = None,
+    ) -> None:
+        """Save the model's endpoint prediction (x0-hat) at a given denoising t.
+
+        Denormalizes the full-resolution aggregated x-prediction and writes TIFF
+        files for the first forecast frame — useful for inspecting how the
+        prediction evolves across the denoising trajectory (t=0.9 -> 0) and
+        spotting artifacts from patch averaging. Files are optionally uploaded
+        to the bucket via upload_fn.
+        """
+        debug_dir = os.path.join(output_dir, "debug_endpoints")
+        os.makedirs(debug_dir, exist_ok=True)
+
+        t_label = f"t{t_val:.1f}"
+
+        # Denormalize a clone so we never touch the live inference tensor.
+        sat_x = x_pred[:, :c_sat].clone()
+        lightning_x = x_pred[:, c_sat:].clone()
+        sat_denorm, lightning_denorm = denormalize(sat_x, lightning_x, self.device)
+        radar_denorm = sat_denorm[:, -1]  # (1, nb, H, W) — radar is last sat channel
+
+        # Extract first forecast frame (k=0) with the same channels as the
+        # regular output: sat [0, 11], lightning, radar.
+        sat_frame = sat_denorm[:, [0, 11], 0, :, :].cpu()       # (1, 2, H, W)
+        lightning_frame = lightning_denorm[:, :, 0, :, :].cpu()  # (1, c_lightning, H, W)
+        radar_frame = radar_denorm[:, 0:1, :, :].cpu()           # (1, 1, H, W)
+
+        self._save_timestep_files(
+            sat_frame,
+            lightning_frame,
+            radar_frame,
+            debug_dir,
+            pred_date,
+            geo_transform,
+            crs,
+            crop_range,
+            upload_fn,
+            filename_prefix=f"endpoint_{t_label}",
+            make_cog=False,  # skip COG for debug speed
+        )
+        logger.info(f"  [debug] saved endpoint prediction at {t_label}")
+
     def _save_timestep_files(
         self,
         sat_frame: torch.Tensor,
@@ -663,13 +746,15 @@ class InferenceEngine:
         crs: str,
         crop_range: slice,
         upload_fn: Optional[Callable[[str], None]] = None,
+        filename_prefix: str = "forecast",
+        make_cog: bool = True,
     ) -> list:
         """Write TIFF files for one forecast timestep and optionally upload them.
 
         This is designed to run in a background thread so GPU inference can
         proceed concurrently.
         """
-        base_filename = f"forecast_{pred_date.strftime('%Y%m%d%H%M')}"
+        base_filename = f"{filename_prefix}_{pred_date.strftime('%Y%m%d%H%M')}"
         saved = []
 
         sat_np = self._fill_bad_pixels(sat_frame, CLIP_MIN).squeeze(0).numpy().astype(np.float32)
@@ -693,7 +778,8 @@ class InferenceEngine:
                 nodata=np.nan, **common_kwargs,
             ) as dst:
                 dst.write(sat_np[ch, crop_range], 1)
-            convert_to_cog(ch_path)
+            if make_cog:
+                convert_to_cog(ch_path)
             if upload_fn:
                 upload_fn(ch_path)
             saved.append(ch_path)
@@ -705,7 +791,8 @@ class InferenceEngine:
             nodata=-9999, **common_kwargs,
         ) as dst:
             dst.write(lightning_np[0, crop_range], 1)
-        convert_to_cog(lightning_path)
+        if make_cog:
+            convert_to_cog(lightning_path)
         if upload_fn:
             upload_fn(lightning_path)
         saved.append(lightning_path)
@@ -717,7 +804,8 @@ class InferenceEngine:
             nodata=np.nan, **common_kwargs,
         ) as dst:
             dst.write(radar_np[crop_range], 1)
-        convert_to_cog(radar_path)
+        if make_cog:
+            convert_to_cog(radar_path)
         if upload_fn:
             upload_fn(radar_path)
         saved.append(radar_path)
@@ -732,6 +820,7 @@ class InferenceEngine:
         forecast_steps: int = 18,
         nb_forecast: int = 3,
         upload_fn: Optional[Callable[[str], None]] = None,
+        debug_endpoint_t_values: Optional[list[float]] = None,
     ) -> InferenceResult:
         """Run full inference pipeline.
 
@@ -843,6 +932,10 @@ class InferenceEngine:
             geo_transform = rasterio.transform.from_origin(-10.0, lat_max_shifted, 0.012, 0.012)
             crs = "EPSG:4326"
 
+            # Full-image geo transform for debug endpoint snapshots (no crop
+            # offset — the uncropped top-left is at lat 65.0).
+            debug_geo_transform = rasterio.transform.from_origin(-10.0, 65.0, 0.012, 0.012)
+
             # Drive the generator and dispatch I/O to a thread pool so that
             # TIFF writing + COG conversion + GCS upload overlap with GPU inference.
             output_files = []
@@ -855,6 +948,12 @@ class InferenceEngine:
                     forecast_steps=forecast_steps,
                     nb_forecast=nb_forecast,
                     date=initial_date,
+                    output_dir=output_dir,
+                    debug_endpoint_t_values=debug_endpoint_t_values,
+                    debug_upload_fn=upload_fn,
+                    debug_geo_transform=debug_geo_transform,
+                    debug_crs=crs,
+                    debug_crop_range=slice(None),  # full Europe, no crop
                 ):
                     batch_nb = sat_batch.shape[2]
                     for k in range(batch_nb):
