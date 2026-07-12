@@ -48,7 +48,7 @@ ENV MODE=cli
 ENV LOG_LEVEL=INFO
 ENV CACHE_DIR=/tmp/flashnet_cache
 ENV MODEL_PATH=/tmp/flashnet_cache/model.safetensors
-ENV MODEL_GCS_PATH=gs://eumetsat_mtg_preprocess/assets/bridge_10july2026.safetensors
+ENV MODEL_GCS_PATH=gs://eumetsat_mtg_preprocess/assets/linear_12july2026.safetensors
 
 
 # Default command

@@ -905,7 +905,7 @@ model_v26_mtg_europe_lightning_radar_shortcut:
   save_every_n_epochs: 10
   model_dir: "models/"
   parametrization: "standard"
-  interpolation: "bridge"
+  interpolation: "linear"
   batch_size: 64
   learning_rate: 0.0003
   num_epochs: 500
