@@ -706,7 +706,7 @@ class InferenceEngine:
         debug_dir = os.path.join(output_dir, "debug_endpoints")
         os.makedirs(debug_dir, exist_ok=True)
 
-        t_label = f"t{t_val:.1f}"
+        t_label = f"t{t_val:.2f}"
 
         # Denormalize a clone so we never touch the live inference tensor.
         sat_x = x_pred[:, :c_sat].clone()
