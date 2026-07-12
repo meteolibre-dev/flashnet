@@ -177,6 +177,7 @@ class InferenceEngine:
         interpolation: str = "linear",
         bridge_sigma: float = 0.3,
         bridge_sigma_min: float = 1e-3,
+        poly_power: float = 10.0,
         inference_seed: Optional[int] = None,
         device: Optional[str] = None
     ):
@@ -190,11 +191,13 @@ class InferenceEngine:
             batch_size: Batch size for processing patches
             context_frames: Number of context frames
             use_residual: Whether to use residual connections
-            interpolation: "linear" (rectified flow), "polynomial", or "bridge"
+            interpolation: "linear" (rectified flow), "polynomial" (alpha=1-sqrt(t)),
+                "rev_poly" (high-noise alpha=(1-t)**poly_power), or "bridge"
                 (Brownian-bridge flow matching).
             bridge_sigma: Bridge noise scale (used only if interpolation="bridge").
             bridge_sigma_min: Bridge endpoint variance floor (used only if
                 interpolation="bridge").
+            poly_power: Power p for "rev_poly" (alpha=(1-t)**p). Ignored otherwise.
             inference_seed: Optional seed for reproducible initial RF noise.
             device: Device to run inference on (auto-detected if None)
         """
@@ -208,6 +211,7 @@ class InferenceEngine:
         self.interpolation = interpolation
         self.bridge_sigma = bridge_sigma
         self.bridge_sigma_min = bridge_sigma_min
+        self.poly_power = poly_power
         self.inference_seed = inference_seed
 
         if device is None:
@@ -645,6 +649,12 @@ class InferenceEngine:
                     # averaging velocity, since v is linear in x_pred).
                     if self.interpolation == "polynomial":
                         averaged_velocity = (x_t_full_res - averaged_x_pred) / (2 * t_val + 1e-8)
+                    elif self.interpolation == "rev_poly":
+                        # alpha=(1-t)^p  =>  dx/dt = p*(1-t)^(p-1)/(1-(1-t)^p)*(x_t-x_pred)
+                        # behaves like 1/t (linear) as t->0 and -> 0 as t->1.
+                        omt = 1.0 - t_val
+                        ratio = self.poly_power * omt ** (self.poly_power - 1) / (1.0 - omt ** self.poly_power + 1e-8)
+                        averaged_velocity = (x_t_full_res - averaged_x_pred) * ratio
                     else:  # linear
                         averaged_velocity = (x_t_full_res - averaged_x_pred) / t_val
                     del averaged_x_pred

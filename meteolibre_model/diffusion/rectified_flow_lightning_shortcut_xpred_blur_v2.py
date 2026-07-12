@@ -552,9 +552,10 @@ def full_image_generation(
             x_pred = torch.cat([sat_x_pred, lightning_x_pred], dim=1)[:, :, model.context_frames:]
 
             # Integration step.
-            # linear/polynomial: Euler  x_{t-dt} = x_t - v*dt
+            # linear/polynomial/rev_poly: Euler  x_{t-dt} = x_t - v*dt
             #   linear:      v = (x_t - x_pred) / t
             #   polynomial:  v = (x_t - x_pred) / (2*t)
+            #   rev_poly:    v = p*(1-t)^(p-1)/(1-(1-t)^p) * (x_t - x_pred)
             # bridge: EXACT closed-form ODE step (NOT Euler). Naive Euler with the
             #   bridge velocity diverges via c'/c near the data end
             #   (cp_over_c ~ sigma^2/(2 sigma_min^2) ~ 1e4, lambda*dt >> 2). The

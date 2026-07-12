@@ -100,6 +100,7 @@ def run_inference(data_path: str, gcs_client=None) -> str:
         context_frames=config.model.context_frames,
         use_residual=config.model.use_residual,
         interpolation=config.model.interpolation,
+        poly_power=config.model.poly_power,
         inference_seed=config.model.inference_seed,
     )
 
