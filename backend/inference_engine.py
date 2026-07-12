@@ -41,6 +41,7 @@ from meteolibre_model.diffusion.rectified_flow_lightning_shortcut_xpred_blur_v2 
     denormalize,
     CLIP_MIN,
     bridge_coeffs,
+    shared_channel_noise,
 )
 from safetensors.torch import load_file
 
@@ -401,11 +402,11 @@ class InferenceEngine:
             noise_generator.manual_seed(self.inference_seed)
             logger.info(f"Using inference noise seed {self.inference_seed}")
 
-        x_t_full_res = torch.randn(
-            1, C, nb_forecast, H_big, W_big,
+        x_t_full_res = shared_channel_noise(
+            (1, C, nb_forecast, H_big, W_big),
             device=self.device,
             generator=noise_generator,
-        )
+        ).clone()
         # Bridge flow matching: keep the fixed noise endpoint (t=1 source). The
         # exact ODE step references it at every denoising step.
         x1_init = x_t_full_res.clone() if self.interpolation == "bridge" else None
@@ -693,11 +694,11 @@ class InferenceEngine:
                 del x1_init
             del x_t_full_res
             torch.cuda.empty_cache()
-            x_t_full_res = torch.randn(
-                1, C, nb_forecast, H_big, W_big,
+            x_t_full_res = shared_channel_noise(
+                (1, C, nb_forecast, H_big, W_big),
                 device=self.device,
                 generator=noise_generator,
-            )
+            ).clone()
             x1_init = x_t_full_res.clone() if self.interpolation == "bridge" else None
             current_step += this_nb
 

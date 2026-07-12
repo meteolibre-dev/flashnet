@@ -109,11 +109,56 @@ def denormalize_residual(x0, c_sat, device):
     return x0 * std + mean
 
 
-def get_x_t_rf(x0, x1, t, interpolation="linear"):
+def shared_channel_noise(shape, device, dtype=torch.float32, generator=None):
+    """Sample one 2D Gaussian field per batch/time and share it across channels."""
+    if len(shape) != 5:
+        raise ValueError(f"Expected a 5D (B, C, T, H, W) shape, got {shape}")
+    batch, channels, temporal, height, width = shape
+    noise_2d = torch.randn(
+        batch, 1, temporal, height, width,
+        device=device,
+        dtype=dtype,
+        generator=generator,
+    )
+    return noise_2d.expand(batch, channels, temporal, height, width)
+
+
+def shared_channel_noise_like(x, generator=None):
+    """Like :func:`shared_channel_noise`, using ``x`` as the shape template.
+
+    ``expand`` gives every satellite/radar/lightning channel the same normalized
+    noise realization. The returned tensor is a zero-stride view along channels;
+    clone it before performing in-place updates during inference.
+    """
+    return shared_channel_noise(x.shape, x.device, x.dtype, generator)
+
+
+def get_x_t_rf(x0, x1, t, interpolation="linear", poly_power=10.0):
     """
     Get the interpolated point x_t based on the chosen schedule.
-    - 'linear': x_t = (1 - t) * x0 + t * x1
-    - 'polynomial': x_t = (1 - t^(1/2)) * x0 + t^(1/2) * x1
+    Convention: t=0 -> data x0, t=1 -> noise x1.  alpha(t) is the DATA
+    coefficient:  x_t = alpha(t) * x0 + (1 - alpha(t)) * x1.
+
+    - 'linear':      alpha = 1 - t
+    - 'polynomial':  alpha = 1 - sqrt(t)   (mild noise bias)
+    - 'rev_poly':    alpha = (1 - t)**poly_power   (HIGH-NOISE bias)
+        The data coefficient stays near 0 (almost pure noise) for t in
+        [~0.1, 1] and rises *rapidly* to 1 (pure data) only as t -> 0. This is
+        the schedule to use when you want the model to operate in a high-noise
+        regime for most of the trajectory and do all of its denoising in a
+        narrow window near the data end (t -> 0).
+
+        poly_power vs alpha(0.1):
+            p=10 -> 0.35  (default),
+            p=15 -> 0.21,  p=20 -> 0.12,
+            p=22 -> 0.10  (matches the 'alpha(0.1) ~= 0.1' target),
+            p=25 -> 0.07
+        p=1 collapses to 'linear'. Start around p=10-15 and tune.
+
+        IMPORTANT: the existing 'polynomial' branch (alpha = 1 - sqrt(t)) is a
+        DIFFERENT family (the exponent sits on t, not on (1-t)). Lowering its
+        exponent flattens the curve and can NOT produce this high-noise cliff
+        shape -- it just keeps alpha low everywhere, including near t=0.
     - 'bridge': handled inline in trainer_step / full_image_generation (needs
       an extra noise draw eps), see `bridge_coeffs`.
     """
@@ -121,6 +166,9 @@ def get_x_t_rf(x0, x1, t, interpolation="linear"):
         return (1 - t) * x0 + t * x1
     elif interpolation == "polynomial":
         alpha = 1 - t ** 0.5
+        return alpha * x0 + (1 - alpha) * x1
+    elif interpolation == "rev_poly":
+        alpha = (1 - t) ** poly_power
         return alpha * x0 + (1 - alpha) * x1
     else:
         raise ValueError(f"Unknown interpolation schedule: {interpolation}")
@@ -206,6 +254,7 @@ def trainer_step(
     model, batch, device, sigma=0.0, parametrization="standard", interpolation="linear", use_residual=True,
     bridge_sigma=0.3, bridge_sigma_min=1e-3, bridge_wclamp=10.0,
     grad_weight=0.0,
+    poly_power=10.0,
 ):
     if parametrization != "standard":
         raise ValueError("Only 'standard' parametrization is supported for x-prediction.")
@@ -244,7 +293,11 @@ def trainer_step(
         last_context = x_context[:, :, model.context_frames - 1:model.context_frames]
         x1 = last_context.expand_as(x0)
     else:
-        x1 = torch.randn_like(x0)
+        # One independent 2D Gaussian field per sample/forecast frame, shared
+        # across all normalized output channels. This prevents the model's
+        # channel projection from suppressing the source by averaging many
+        # independent channel-noise realizations.
+        x1 = shared_channel_noise_like(x0)
 
     loss_sat = loss_lightning = 0.0
 
@@ -310,7 +363,7 @@ def trainer_step(
     else:
         x_context_t = x_context
 
-    xt_emp = get_x_t_rf(x0_emp, x1_emp, t_emp.view(num_emp,1,1,1,1), interpolation) if interpolation != "bridge" else None
+    xt_emp = get_x_t_rf(x0_emp, x1_emp, t_emp.view(num_emp,1,1,1,1), interpolation, poly_power=poly_power) if interpolation != "bridge" else None
     if interpolation == "bridge":
         # x_t = (1-t) x0 + t x1 + c_t * eps,  c_t^2 = sigma^2 t(1-t) + sigma_min^2
         c_t, _ = bridge_coeffs(t_emp, bridge_sigma, bridge_sigma_min)  # (B,)
@@ -323,6 +376,8 @@ def trainer_step(
     # alpha(t) = 1 - sqrt(t)  =>  da/dt = -1 / (2 * sqrt(t))
     if interpolation == "linear":
         da_dt = torch.full_like(t_emp, -1.0)
+    elif interpolation == "rev_poly":  # alpha(t) = (1-t)^p  =>  da/dt = -p*(1-t)^(p-1)
+        da_dt = -poly_power * (1.0 - t_emp) ** (poly_power - 1)
     else:  # polynomial: alpha(t) = 1 - t^(1/2)
         da_dt = -0.5 / (t_emp ** 0.5 + 1e-8)
 
@@ -364,7 +419,14 @@ def trainer_step(
         wf = 1.0 + (1.0 - t_emp.view(b, 1, 1, 1, 1)) * cp_over_c.view(b, 1, 1, 1, 1)
         weight = (wf ** 2).clamp(max=bridge_wclamp)
     else:
-        # linear: da/dt = -1  =>  empirical 1/t^2 upweighting of small t
+        # linear / rev_poly: empirical 1/t^2 upweighting of small t.
+        # For 'rev_poly' the small-t region [0, ~0.1] is exactly where the
+        # data/noise transition (and thus the velocity) lives, so this
+        # upweights the part that matters; the high-noise tail t>0.1 still
+        # receives weight ~1-4 (not zeroed). If you instead want the model to
+        # train harder across the whole noise range, switch this branch to a
+        # uniform weight (=1.0) or to the velocity-matching weight
+        # (1-t)**(2*(poly_power-1)).
         weight = (1.0 / (t_emp.view(b, 1, 1, 1, 1) + 1e-2) ** 2).clamp(0.9, 10.)
 
     # direct x-loss
@@ -411,6 +473,7 @@ def full_image_generation(
     normalize_input=True,
     use_residual=True,
     schedule_power=1.0,
+    poly_power=10.0,
     bridge_sigma=0.3,
     bridge_sigma_min=1e-3,
 ):
@@ -457,7 +520,12 @@ def full_image_generation(
             x_t = last_ctx_expanded.clone()
             x1_init = last_ctx_expanded.clone()
         else:
-            x_t = torch.randn(batch_size, nb_channel, nb_forecasted_frame, h, w, device=device)
+            # Match training: sample one 2D Gaussian field per sample/forecast
+            # frame and expose the same realization to every output channel.
+            x_t = shared_channel_noise(
+                (batch_size, nb_channel, nb_forecasted_frame, h, w),
+                device=device,
+            ).clone()
             x1_init = x_t.clone()
 
         # Non-uniform timestep grid: t descends 1 -> 0.
@@ -506,6 +574,13 @@ def full_image_generation(
             else:
                 if interpolation == "polynomial":
                     s_theta = (x_t - x_pred) / (2 * t_val + 1e-8)
+                elif interpolation == "rev_poly":
+                    # velocity of alpha=(1-t)^p path, expressed via x_pred:
+                    #   dx/dt = p*(1-t)^(p-1) / (1-(1-t)^p) * (x_t - x_pred)
+                    # -> behaves like 1/t (linear) as t->0 and like 0 as t->1.
+                    omt = 1.0 - t_val
+                    ratio = poly_power * omt ** (poly_power - 1) / (1.0 - omt ** poly_power + 1e-8)
+                    s_theta = (x_t - x_pred) * ratio
                 else:
                     s_theta = (x_t - x_pred) / t_val
                 x_t = x_t - s_theta * d_const
