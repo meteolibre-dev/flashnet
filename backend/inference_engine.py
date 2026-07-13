@@ -406,15 +406,6 @@ class InferenceEngine:
             noise_generator.manual_seed(self.inference_seed)
             logger.info(f"Using inference noise seed {self.inference_seed}")
 
-        x_t_full_res = shared_channel_noise(
-            (1, C, nb_forecast, H_big, W_big),
-            device=self.device,
-            generator=noise_generator,
-        ).clone()
-        # Bridge flow matching: keep the fixed noise endpoint (t=1 source). The
-        # exact ODE step references it at every denoising step.
-        x1_init = x_t_full_res.clone() if self.interpolation == "bridge" else None
-
         patch_weights = self._get_gaussian_weights(self.patch_size)
         patch_weights = patch_weights.view(1, 1, 1, self.patch_size, self.patch_size)
 
@@ -477,6 +468,31 @@ class InferenceEngine:
         while current_step < forecast_steps:
             remaining = forecast_steps - current_step
             this_nb = min(nb_forecast, remaining)
+
+            if self.interpolation == "bridge":
+                # Match bridge training at t=1:
+                #   x_1 = last_context + sigma_min * eps.
+                # The fixed endpoint itself is the latest observed frame—not
+                # Gaussian noise—and is referenced by every exact ODE step.
+                last_context = current_high_res_context[:, :, -1:, :, :]
+                x1_init = last_context.expand(
+                    1, C, this_nb, H_big, W_big
+                ).clone()
+                endpoint_noise = torch.randn(
+                    x1_init.shape,
+                    device=self.device,
+                    dtype=x1_init.dtype,
+                    generator=noise_generator,
+                )
+                x_t_full_res = x1_init + self.bridge_sigma_min * endpoint_noise
+                del endpoint_noise
+            else:
+                x_t_full_res = shared_channel_noise(
+                    (1, C, this_nb, H_big, W_big),
+                    device=self.device,
+                    generator=noise_generator,
+                ).clone()
+                x1_init = None
 
             if date:
                 prediction_date = date + timedelta(minutes=10 * (current_step + 1))
@@ -704,12 +720,6 @@ class InferenceEngine:
                 del x1_init
             del x_t_full_res
             torch.cuda.empty_cache()
-            x_t_full_res = shared_channel_noise(
-                (1, C, nb_forecast, H_big, W_big),
-                device=self.device,
-                generator=noise_generator,
-            ).clone()
-            x1_init = x_t_full_res.clone() if self.interpolation == "bridge" else None
             current_step += this_nb
 
     def _save_debug_endpoint(
