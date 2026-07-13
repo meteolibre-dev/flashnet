@@ -41,7 +41,7 @@ from meteolibre_model.diffusion.rectified_flow_lightning_shortcut_xpred_blur_v2 
     denormalize,
     CLIP_MIN,
     bridge_coeffs,
-    shared_channel_noise,
+    structured_gaussian_noise,
 )
 from safetensors.torch import load_file
 
@@ -178,6 +178,7 @@ class InferenceEngine:
         bridge_sigma: float = 0.3,
         bridge_sigma_min: float = 1e-3,
         poly_power: float = 10.0,
+        noise_rho: float = 0.90,
         inference_seed: Optional[int] = None,
         device: Optional[str] = None
     ):
@@ -198,6 +199,8 @@ class InferenceEngine:
             bridge_sigma_min: Bridge endpoint variance floor (used only if
                 interpolation="bridge").
             poly_power: Power p for "rev_poly" (alpha=(1-t)**p). Ignored otherwise.
+            noise_rho: Correlation strength rho in [0,1] for the structured
+                Gaussian prior (sqrt(rho)*shared + sqrt(1-rho)*independent).
             inference_seed: Optional seed for reproducible initial RF noise.
             device: Device to run inference on (auto-detected if None)
         """
@@ -212,6 +215,7 @@ class InferenceEngine:
         self.bridge_sigma = bridge_sigma
         self.bridge_sigma_min = bridge_sigma_min
         self.poly_power = poly_power
+        self.noise_rho = noise_rho
         self.inference_seed = inference_seed
 
         if device is None:
@@ -474,22 +478,26 @@ class InferenceEngine:
                 #   x_1 = last_context + sigma_min * eps.
                 # The fixed endpoint itself is the latest observed frame—not
                 # Gaussian noise—and is referenced by every exact ODE step.
+                # The endpoint perturbation uses the same structured Gaussian
+                # prior as the RF source noise.
                 last_context = current_high_res_context[:, :, -1:, :, :]
                 x1_init = last_context.expand(
                     1, C, this_nb, H_big, W_big
                 ).clone()
-                endpoint_noise = torch.randn(
+                endpoint_noise = structured_gaussian_noise(
                     x1_init.shape,
                     device=self.device,
                     dtype=x1_init.dtype,
+                    rho=self.noise_rho,
                     generator=noise_generator,
                 )
                 x_t_full_res = x1_init + self.bridge_sigma_min * endpoint_noise
                 del endpoint_noise
             else:
-                x_t_full_res = shared_channel_noise(
+                x_t_full_res = structured_gaussian_noise(
                     (1, C, this_nb, H_big, W_big),
                     device=self.device,
+                    rho=self.noise_rho,
                     generator=noise_generator,
                 ).clone()
                 x1_init = None

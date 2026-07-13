@@ -109,28 +109,59 @@ def denormalize_residual(x0, c_sat, device):
     return x0 * std + mean
 
 
-def shared_channel_noise(shape, device, dtype=torch.float32, generator=None):
-    """Sample one 2D Gaussian field per batch/time and share it across channels."""
+def structured_gaussian_noise(shape, device, dtype=torch.float32, rho=0.90, generator=None):
+    """Structured Gaussian noise with shared and independent components.
+
+    .. math::
+        \\epsilon_{c,t} = \\sqrt{\\rho}\\, \\epsilon_{\\text{shared}}
+                       + \\sqrt{1-\\rho}\\, \\epsilon_{c,t}^{\\text{indep}}
+
+    The shared component is a single 2D Gaussian field per batch element with
+    shape ``(B, 1, 1, H, W)``, correlated across **all** channels and temporal
+    frames.  The independent component is fully i.i.d. per channel and per
+    timestep ``(B, C, T, H, W)``.
+
+    This follows the partially-shared-noise construction recommended in the
+    multi-view / video diffusion literature (e.g. Theiss et al. 2024, arXiv
+    2412.03756) rather than the fully-rank-one (rho=1) extreme.
+
+    Args:
+        shape: ``(B, C, T, H, W)``.
+        rho: correlation strength in [0, 1].
+            * rho=1.0 → fully shared (rank-one, identical across C and T).
+            * rho=0.0 → fully independent (standard ``torch.randn``).
+            * rho=0.90 (default) → 90 % shared, 10 % independent.
+        generator: optional ``torch.Generator`` for reproducibility.
+    """
     if len(shape) != 5:
         raise ValueError(f"Expected a 5D (B, C, T, H, W) shape, got {shape}")
     batch, channels, temporal, height, width = shape
-    noise_2d = torch.randn(
-        batch, 1, temporal, height, width,
-        device=device,
-        dtype=dtype,
-        generator=generator,
-    )
-    return noise_2d.expand(batch, channels, temporal, height, width)
 
-
-def shared_channel_noise_like(x, generator=None):
-    """Like :func:`shared_channel_noise`, using ``x`` as the shape template.
-
-    ``expand`` gives every satellite/radar/lightning channel the same normalized
-    noise realization. The returned tensor is a zero-stride view along channels;
-    clone it before performing in-place updates during inference.
-    """
-    return shared_channel_noise(x.shape, x.device, x.dtype, generator)
+    if rho >= 1.0:
+        shared = torch.randn(
+            batch, 1, 1, height, width,
+            device=device, dtype=dtype, generator=generator,
+        )
+        return shared.expand(batch, channels, temporal, height, width)
+    elif rho <= 0.0:
+        return torch.randn(
+            batch, channels, temporal, height, width,
+            device=device, dtype=dtype, generator=generator,
+        )
+    else:
+        sqrt_rho = math.sqrt(rho)
+        sqrt_omr = math.sqrt(1.0 - rho)
+        shared = torch.randn(
+            batch, 1, 1, height, width,
+            device=device, dtype=dtype, generator=generator,
+        )
+        independent = torch.randn(
+            batch, channels, temporal, height, width,
+            device=device, dtype=dtype, generator=generator,
+        )
+        return sqrt_rho * shared.expand(
+            batch, channels, temporal, height, width
+        ) + sqrt_omr * independent
 
 
 def get_x_t_rf(x0, x1, t, interpolation="linear", poly_power=10.0):
@@ -255,6 +286,8 @@ def trainer_step(
     bridge_sigma=0.3, bridge_sigma_min=1e-3, bridge_wclamp=10.0,
     grad_weight=0.0,
     poly_power=10.0,
+    noise_rho=0.90,
+    temporal_weight_scale=1.0,
 ):
     if parametrization != "standard":
         raise ValueError("Only 'standard' parametrization is supported for x-prediction.")
@@ -293,11 +326,13 @@ def trainer_step(
         last_context = x_context[:, :, model.context_frames - 1:model.context_frames]
         x1 = last_context.expand_as(x0)
     else:
-        # One independent 2D Gaussian field per sample/forecast frame, shared
-        # across all normalized output channels. This prevents the model's
-        # channel projection from suppressing the source by averaging many
-        # independent channel-noise realizations.
-        x1 = shared_channel_noise_like(x0)
+        # Structured Gaussian prior (partially shared across channels AND
+        # temporal frames):  eps = sqrt(rho)*eps_shared + sqrt(1-rho)*eps_indep
+        # Prevents the model's channel projection from fully suppressing the
+        # source by averaging independent channel-noise, while retaining some
+        # band-specific stochastic structure.  rho=1 collapses to the previous
+        # fully-shared construction; rho=0 recovers standard i.i.d. noise.
+        x1 = structured_gaussian_noise(x0.shape, x0.device, x0.dtype, rho=noise_rho)
 
     loss_sat = loss_lightning = 0.0
 
@@ -369,7 +404,7 @@ def trainer_step(
         c_t, _ = bridge_coeffs(t_emp, bridge_sigma, bridge_sigma_min)  # (B,)
         tsh = t_emp.view(num_emp, 1, 1, 1, 1)
         csh = c_t.view(num_emp, 1, 1, 1, 1)
-        eps_bb = torch.randn_like(x0_emp)
+        eps_bb = structured_gaussian_noise(x0_emp.shape, x0_emp.device, x0_emp.dtype, rho=noise_rho)
         xt_emp = (1.0 - tsh) * x0_emp + tsh * x1_emp + csh * eps_bb
 
     # da_dt for correct v-loss weighting
@@ -429,6 +464,18 @@ def trainer_step(
         # (1-t)**(2*(poly_power-1)).
         weight = (1.0 / (t_emp.view(b, 1, 1, 1, 1) + 1e-2) ** 2).clamp(0.9, 10.)
 
+    # Temporal weighting: upweight later forecast frames so the model learns
+    # harder on frames farther in the future (frame 0 -> w=1, frame 1 -> w=2,
+    # frame 2 -> w=3, ...).  The ramp is normalized to mean 1 so the overall
+    # loss magnitude is preserved.  temporal_weight_scale=0 disables it
+    # (uniform), 1.0 = full linear ramp.
+    n_forecast = x0_emp.shape[2]
+    if temporal_weight_scale > 0 and n_forecast > 1:
+        ramp = torch.arange(1, n_forecast + 1, device=device, dtype=weight.dtype)
+        ramp = ramp / ramp.mean()                     # mean == 1
+        blend = (1.0 - temporal_weight_scale) + temporal_weight_scale * ramp
+        weight = weight * blend.view(1, 1, n_forecast, 1, 1)
+
     # direct x-loss
     loss_sat     = (weight * (x_sat_pred_emp - x0_emp[:, :c_sat]) ** 2)[mask_emp].mean()
     loss_lightning = (weight * (x_light_pred_emp - x0_emp[:, c_sat:]) ** 2).mean()
@@ -476,6 +523,7 @@ def full_image_generation(
     poly_power=10.0,
     bridge_sigma=0.3,
     bridge_sigma_min=1e-3,
+    noise_rho=0.90,
 ):
     """
     Non-uniform timestep schedule for the Euler solver.
@@ -520,11 +568,12 @@ def full_image_generation(
             x_t = last_ctx_expanded.clone()
             x1_init = last_ctx_expanded.clone()
         else:
-            # Match training: sample one 2D Gaussian field per sample/forecast
-            # frame and expose the same realization to every output channel.
-            x_t = shared_channel_noise(
+            # Match training: structured Gaussian prior with partially shared
+            # noise across channels and temporal frames.
+            x_t = structured_gaussian_noise(
                 (batch_size, nb_channel, nb_forecasted_frame, h, w),
                 device=device,
+                rho=noise_rho,
             ).clone()
             x1_init = x_t.clone()
 

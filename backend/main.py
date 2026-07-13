@@ -101,6 +101,7 @@ def run_inference(data_path: str, gcs_client=None) -> str:
         use_residual=config.model.use_residual,
         interpolation=config.model.interpolation,
         poly_power=config.model.poly_power,
+        noise_rho=config.model.noise_rho,
         inference_seed=config.model.inference_seed,
     )
 

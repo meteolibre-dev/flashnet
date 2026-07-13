@@ -39,6 +39,7 @@ class ModelConfig(BaseModel):
     parametrization: str = "standard"
     interpolation: str = "linear"
     poly_power: float = 10.0
+    noise_rho: float = 0.90
     inference_seed: Optional[int] = None
     debug_endpoint_t_values: Optional[str] = None  # comma-sep, e.g. "0.9,0.8,...,0.0"
 
@@ -98,6 +99,7 @@ class Config(BaseModel):
                 use_residual=os.getenv("USE_RESIDUAL", "False").lower() == "true",
                 interpolation=os.getenv("INTERPOLATION", "linear"),
                 poly_power=float(os.getenv("POLY_POWER", 10.0)),
+                noise_rho=float(os.getenv("NOISE_RHO", 0.90)),
                 inference_seed=(
                     int(os.environ["INFERENCE_SEED"])
                     if os.getenv("INFERENCE_SEED") not in (None, "")
