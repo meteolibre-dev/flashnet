@@ -102,6 +102,7 @@ def run_inference(data_path: str, gcs_client=None) -> str:
         interpolation=config.model.interpolation,
         poly_power=config.model.poly_power,
         noise_rho=config.model.noise_rho,
+        bridge_ode_t_eps=config.model.bridge_ode_t_eps,
         inference_seed=config.model.inference_seed,
     )
 

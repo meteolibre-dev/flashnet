@@ -177,6 +177,7 @@ class InferenceEngine:
         interpolation: str = "linear",
         bridge_sigma: float = 0.3,
         bridge_sigma_min: float = 1e-3,
+        bridge_ode_t_eps: float = 0.0,
         poly_power: float = 10.0,
         noise_rho: float = 0.90,
         inference_seed: Optional[int] = None,
@@ -216,7 +217,17 @@ class InferenceEngine:
         self.bridge_sigma_min = bridge_sigma_min
         self.poly_power = poly_power
         self.noise_rho = noise_rho
+        self.bridge_ode_t_eps = bridge_ode_t_eps
         self.inference_seed = inference_seed
+        # Early-stop the bridge ODE at t = t_eps (set to 0.0 to integrate all the
+        # way to t=0). The bridge's c_t shrinks to sigma_min at t=0, so the
+        # model's x_pred receives an almost-clean input and collapses to a
+        # regression-to-the-mean (blurry) prediction in the last few steps.
+        # Stopping at a small but nonzero t_eps (e.g. 0.03–0.05) keeps c_t large
+        # enough for the model to produce a sharp denoising. The final output is
+        # the model's x_pred at t_eps (bypassing the ODE step entirely), which
+        # also avoids the stiff c'/c mean-reversion near the data end.
+        self.bridge_ode_t_eps: float = 0.0
 
         if device is None:
             self.device = "cuda" if torch.cuda.is_available() else "cpu"
@@ -658,16 +669,35 @@ class InferenceEngine:
                     #   x_{t_next} = mu_next + (x_t - mu_t) * c_next/c_t
                     #   mu_t     = (1-t)      x_pred + t      x1_init
                     #   mu_next  = (1-t_next) x_pred + t_next x1_init
-                    t_next = max(t_val - dt, 0.0)
-                    c_t, _ = bridge_coeffs(t_val, self.bridge_sigma, self.bridge_sigma_min)
-                    c_next, _ = bridge_coeffs(t_next, self.bridge_sigma, self.bridge_sigma_min)
-                    ratio = (c_next / c_t).item()
-                    mu_t = (1.0 - t_val) * averaged_x_pred + t_val * x1_init
-                    mu_next = (1.0 - t_next) * averaged_x_pred + t_next * x1_init
-                    del averaged_x_pred
-                    # In-place: x_t = mu_next + (x_t - mu_t) * ratio
-                    x_t_full_res.sub_(mu_t).mul_(ratio).add_(mu_next)
-                    del mu_t, mu_next
+                    #
+                    # Two early-exit conditions skip the ODE step and use the
+                    # model's x_pred directly as the next state:
+                    #   (a) the *last* step (i == N-1): the ODE step is a ~2%
+                    #       blend of the previous trajectory onto x_pred — pointless
+                    #       and risks numerical issues from the stiff c'/c.
+                    #   (b) t_val has reached bridge_ode_t_eps (e.g. 0.03–0.05):
+                    #       at smaller t the bridge noise c_t is dominated by
+                    #       sigma_min and the model's x_pred collapses to a
+                    #       regression-to-the-mean (blurry) field. Stopping at a
+                    #       small but nonzero t_eps keeps c_t large enough for
+                    #       a sharp denoising and uses that sharp x_pred as the
+                    #       final output.
+                    last_step = (i == self.denoising_steps - 1)
+                    early_stop = (self.bridge_ode_t_eps > 0.0 and t_val <= self.bridge_ode_t_eps)
+                    if last_step or early_stop:
+                        x_t_full_res = averaged_x_pred
+                        del averaged_x_pred
+                    else:
+                        t_next = max(t_val - dt, 0.0)
+                        c_t, _ = bridge_coeffs(t_val, self.bridge_sigma, self.bridge_sigma_min)
+                        c_next, _ = bridge_coeffs(t_next, self.bridge_sigma, self.bridge_sigma_min)
+                        ratio = (c_next / c_t).item()
+                        mu_t = (1.0 - t_val) * averaged_x_pred + t_val * x1_init
+                        mu_next = (1.0 - t_next) * averaged_x_pred + t_next * x1_init
+                        del averaged_x_pred
+                        # In-place: x_t = mu_next + (x_t - mu_t) * ratio
+                        x_t_full_res.sub_(mu_t).mul_(ratio).add_(mu_next)
+                        del mu_t, mu_next
                 else:
                     # RF Euler step from the aggregated prediction (equivalent to
                     # averaging velocity, since v is linear in x_pred).

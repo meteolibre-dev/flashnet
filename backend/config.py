@@ -100,6 +100,7 @@ class Config(BaseModel):
                 interpolation=os.getenv("INTERPOLATION", "linear"),
                 poly_power=float(os.getenv("POLY_POWER", 10.0)),
                 noise_rho=float(os.getenv("NOISE_RHO", 0.90)),
+                bridge_ode_t_eps=float(os.getenv("BRIDGE_ODE_T_EPS", 0.0)),
                 inference_seed=(
                     int(os.environ["INFERENCE_SEED"])
                     if os.getenv("INFERENCE_SEED") not in (None, "")
