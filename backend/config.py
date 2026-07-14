@@ -40,6 +40,7 @@ class ModelConfig(BaseModel):
     interpolation: str = "linear"
     poly_power: float = 10.0
     noise_rho: float = 0.90
+    bridge_ode_t_eps: float = 0.0  # 0.0 = integrate to t=0; >0 = stop bridge ODE early (try 0.03–0.05)
     inference_seed: Optional[int] = None
     debug_endpoint_t_values: Optional[str] = None  # comma-sep, e.g. "0.9,0.8,...,0.0"
 
