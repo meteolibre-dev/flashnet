@@ -255,7 +255,9 @@ def main():
             # Perform training step
             with accelerator.accumulate(model):
                 loss, loss_sat, loss_kpi = trainer_step(
-                    model, batch, device, parametrization=PARAMETRIZATION, interpolation=INTERPOLATION, sigma=sigma_noise_input, use_residual=residual
+                    model, batch, device, parametrization=PARAMETRIZATION, interpolation=INTERPOLATION, sigma=sigma_noise_input, use_residual=residual,
+                    noise_rho=float(params.get('noise_rho', 0.90)),
+                    temporal_weight_scale=float(params.get('temporal_weight_scale', 1.0)),
                 )
 
                 accelerator.backward(loss)
