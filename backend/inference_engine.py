@@ -471,14 +471,9 @@ class InferenceEngine:
         current_step = 0
         current_high_res_context = initial_context
 
-        # Debug: map each target t (0.9, 0.8, ...) to the closest denoising
-        # step index so we can snapshot the endpoint prediction there.
-        debug_step_map: dict[int, float] = {}
-        if debug_endpoint_t_values:
-            for tv in debug_endpoint_t_values:
-                idx = round((1.0 - tv) * self.denoising_steps)
-                idx = min(idx, self.denoising_steps - 1)
-                debug_step_map[idx] = tv
+        # Debug: save endpoint prediction (x0-hat) at every denoising step
+        # during the first AR step, labeled with the actual t_val.
+        debug_enabled = debug_endpoint_t_values is not None
 
         while current_step < forecast_steps:
             remaining = forecast_steps - current_step
@@ -645,13 +640,11 @@ class InferenceEngine:
                 del aggregated_x_pred, weights_sum
 
                 # Debug: snapshot the full-Europe endpoint prediction (x0-hat)
-                # at the target t values during the first AR step.
-                if (debug_endpoint_t_values is not None
-                        and current_step == 0
-                        and i in debug_step_map):
+                # at every denoising step during the first AR step.
+                if debug_enabled and current_step == 0:
                     self._save_debug_endpoint(
                         averaged_x_pred,
-                        debug_step_map[i],
+                        t_val,
                         c_sat,
                         output_dir or ".",
                         prediction_date,
@@ -792,7 +785,7 @@ class InferenceEngine:
         debug_dir = os.path.join(output_dir, "debug_endpoints")
         os.makedirs(debug_dir, exist_ok=True)
 
-        t_label = f"t{t_val:.2f}"
+        t_label = f"t{t_val:.4f}"
 
         # Denormalize a clone so we never touch the live inference tensor.
         sat_x = x_pred[:, :c_sat].clone()
