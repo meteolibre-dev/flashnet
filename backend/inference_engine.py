@@ -217,6 +217,7 @@ class InferenceEngine:
         self.bridge_sigma_min = bridge_sigma_min
         self.poly_power = poly_power
         self.noise_rho = noise_rho
+        self.bridge_ode_t_eps = bridge_ode_t_eps
         self.inference_seed = inference_seed
         # Early-stop the bridge ODE at t = t_eps (set to 0.0 to integrate all the
         # way to t=0). The bridge's c_t shrinks to sigma_min at t=0, so the
