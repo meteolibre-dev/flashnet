@@ -409,6 +409,7 @@ class InferenceEngine:
             raise RuntimeError("Model not loaded")
         
         print("interpolation :", self.interpolation)
+        print("bridge_ode_t_eps :", self.bridge_ode_t_eps)
 
         self.model.eval()
         self.model.to(self.device)
