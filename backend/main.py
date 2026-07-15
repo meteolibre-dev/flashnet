@@ -103,6 +103,8 @@ def run_inference(data_path: str, gcs_client=None) -> str:
         poly_power=config.model.poly_power,
         noise_rho=config.model.noise_rho,
         bridge_ode_t_eps=config.model.bridge_ode_t_eps,
+        bridge_sigma=config.model.bridge_sigma,
+        bridge_sigma_min=config.model.bridge_sigma_min,
         inference_seed=config.model.inference_seed,
     )
 
