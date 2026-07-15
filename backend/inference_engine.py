@@ -217,7 +217,6 @@ class InferenceEngine:
         self.bridge_sigma_min = bridge_sigma_min
         self.poly_power = poly_power
         self.noise_rho = noise_rho
-        self.bridge_ode_t_eps = bridge_ode_t_eps
         self.inference_seed = inference_seed
         # Early-stop the bridge ODE at t = t_eps (set to 0.0 to integrate all the
         # way to t=0). The bridge's c_t shrinks to sigma_min at t=0, so the
@@ -227,7 +226,6 @@ class InferenceEngine:
         # enough for the model to produce a sharp denoising. The final output is
         # the model's x_pred at t_eps (bypassing the ODE step entirely), which
         # also avoids the stiff c'/c mean-reversion near the data end.
-        self.bridge_ode_t_eps: float = 0.0
 
         if device is None:
             self.device = "cuda" if torch.cuda.is_available() else "cpu"
