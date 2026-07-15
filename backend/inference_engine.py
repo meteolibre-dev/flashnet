@@ -689,7 +689,7 @@ class InferenceEngine:
                     # producing a degraded prediction, which feeds back again —
                     # a compounding degradation loop that reproduces the exact
                     # blur we are trying to avoid.
-                    last_step = (i == self.denoising_steps - 1)
+                    last_step = (i == self.denoising_steps - 2)
                     early_stop = (self.bridge_ode_t_eps > 0.0 and t_val <= self.bridge_ode_t_eps)
                     if last_step or early_stop:
                         x_t_full_res = averaged_x_pred
