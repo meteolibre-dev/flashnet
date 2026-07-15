@@ -39,7 +39,7 @@ class ModelConfig(BaseModel):
     parametrization: str = "standard"
     interpolation: str = "linear"
     poly_power: float = 10.0
-    noise_rho: float = 0.90
+    noise_rho: float = 0.50
     bridge_sigma: float = 0.05
     bridge_sigma_min: float = 1e-2
     bridge_ode_t_eps: float = 1.0 / 16  # stop bridge ODE early; 1/16≈0.0625 avoids small-t x-pred collapse
@@ -102,7 +102,7 @@ class Config(BaseModel):
                 use_residual=os.getenv("USE_RESIDUAL", "False").lower() == "true",
                 interpolation=os.getenv("INTERPOLATION", "linear"),
                 poly_power=float(os.getenv("POLY_POWER", 10.0)),
-                noise_rho=float(os.getenv("NOISE_RHO", 0.90)),
+                noise_rho=float(os.getenv("NOISE_RHO", 0.50)),
                 bridge_sigma=float(os.getenv("BRIDGE_SIGMA", 0.05)),
                 bridge_sigma_min=float(os.getenv("BRIDGE_SIGMA_MIN", 1e-2)),
                 bridge_ode_t_eps=float(os.getenv("BRIDGE_ODE_T_EPS", 1.0 / 16)),

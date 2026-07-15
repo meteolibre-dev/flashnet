@@ -179,7 +179,7 @@ class InferenceEngine:
         bridge_sigma_min: float = 1e-2,
         bridge_ode_t_eps: float = 0.0,
         poly_power: float = 10.0,
-        noise_rho: float = 0.90,
+        noise_rho: float = 0.50,
         inference_seed: Optional[int] = None,
         device: Optional[str] = None
     ):
