@@ -682,11 +682,20 @@ class InferenceEngine:
                     #       small but nonzero t_eps keeps c_t large enough for
                     #       a sharp denoising and uses that sharp x_pred as the
                     #       final output.
+                    #
+                    # CRITICAL: when (b) triggers we must BREAK the loop, not
+                    # just skip the ODE step. If we keep iterating, the model
+                    # receives its own clean x_pred as input at the next step,
+                    # producing a degraded prediction, which feeds back again —
+                    # a compounding degradation loop that reproduces the exact
+                    # blur we are trying to avoid.
                     last_step = (i == self.denoising_steps - 1)
                     early_stop = (self.bridge_ode_t_eps > 0.0 and t_val <= self.bridge_ode_t_eps)
                     if last_step or early_stop:
                         x_t_full_res = averaged_x_pred
                         del averaged_x_pred
+                        if early_stop and not last_step:
+                            break  # stop denoising; x_pred at t_eps is the final output
                     else:
                         t_next = max(t_val - dt, 0.0)
                         c_t, _ = bridge_coeffs(t_val, self.bridge_sigma, self.bridge_sigma_min)
