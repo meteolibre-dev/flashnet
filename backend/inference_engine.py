@@ -655,51 +655,39 @@ class InferenceEngine:
                     )
 
                 if self.interpolation == "bridge":
-                    # Exact closed-form bridge ODE step — absorbs the stiff c'/c
-                    # mean-reversion into an O(1) c_next/c_t ratio. Naive Euler
-                    # with the bridge velocity diverges near the data end
-                    # (cp_over_c ~ sigma^2/(2 sigma_min^2) ~ 1e4, lambda*dt >> 2).
-                    #   x_{t_next} = mu_next + (x_t - mu_t) * c_next/c_t
-                    #   mu_t     = (1-t)      x_pred + t      x1_init
-                    #   mu_next  = (1-t_next) x_pred + t_next x1_init
+                    # Bridge Euler step using the flow velocity (eq 8 in
+                    # Lim et al. 2024, arXiv:2410.03229):
+                    #   u_t = (c'/c) * (x_t - mu_t) + (x1_init - x_pred)
+                    #   mu_t = (1-t) * x_pred + t * x1_init
+                    #   c'_t/c_t = sigma^2 * (1-2t) / (2 * c_t^2)
+                    # Euler (t decreasing 1->0):
+                    #   x_next = x_t - u_t * dt
                     #
-                    # Two early-exit conditions skip the ODE step and use the
-                    # model's x_pred directly as the next state:
-                    #   (a) the *last* step (i == N-1): the ODE step is a ~2%
-                    #       blend of the previous trajectory onto x_pred — pointless
-                    #       and risks numerical issues from the stiff c'/c.
-                    #   (b) t_val has reached bridge_ode_t_eps (e.g. 0.03–0.05):
-                    #       at smaller t the bridge noise c_t is dominated by
-                    #       sigma_min and the model's x_pred collapses to a
-                    #       regression-to-the-mean (blurry) field. Stopping at a
-                    #       small but nonzero t_eps keeps c_t large enough for
-                    #       a sharp denoising and uses that sharp x_pred as the
-                    #       final output.
+                    # This is stable with the current bridge params
+                    # (sigma=0.05, sigma_min=1e-2 give max c'/c ≈ 12.5,
+                    # so lambda*dt ≈ 0.39 < 2). The old exact closed-form
+                    # step was needed when sigma_min=1e-3 made c'/c blow up
+                    # to ~45000, but that's no longer the case.
                     #
-                    # CRITICAL: when (b) triggers we must BREAK the loop, not
-                    # just skip the ODE step. If we keep iterating, the model
-                    # receives its own clean x_pred as input at the next step,
-                    # producing a degraded prediction, which feeds back again —
-                    # a compounding degradation loop that reproduces the exact
-                    # blur we are trying to avoid.
+                    # Early-stop at t_eps (or last step): use x_pred directly
+                    # to avoid the small-t regression-to-the-mean collapse.
+                    # MUST break the loop — otherwise the model receives its
+                    # own clean x_pred as input, degrades, and compounds.
                     last_step = (i == self.denoising_steps - 2)
                     early_stop = (self.bridge_ode_t_eps > 0.0 and t_val <= self.bridge_ode_t_eps)
                     if last_step or early_stop:
                         x_t_full_res = averaged_x_pred
                         del averaged_x_pred
                         if early_stop and not last_step:
-                            break  # stop denoising; x_pred at t_eps is the final output
+                            break
                     else:
-                        t_next = max(t_val - dt, 0.0)
-                        c_t, _ = bridge_coeffs(t_val, self.bridge_sigma, self.bridge_sigma_min)
-                        c_next, _ = bridge_coeffs(t_next, self.bridge_sigma, self.bridge_sigma_min)
-                        ratio = (c_next / c_t).item()
+                        c_t, cp_over_c = bridge_coeffs(t_val, self.bridge_sigma, self.bridge_sigma_min)
                         mu_t = (1.0 - t_val) * averaged_x_pred + t_val * x1_init
-                        mu_next = (1.0 - t_next) * averaged_x_pred + t_next * x1_init
-                        del averaged_x_pred
-                        # In-place: x_t = mu_next + (x_t - mu_t) * ratio
-                        x_t_full_res.sub_(mu_t).mul_(ratio).add_(mu_next)
-                        del mu_t, mu_next
+                        # u_t = (c'/c)*(x_t - mu_t) + (x1_init - x_pred)  [eq 8]
+                        averaged_velocity = cp_over_c * (x_t_full_res - mu_t) + (x1_init - averaged_x_pred)
+                        del averaged_x_pred, mu_t
+                        x_t_full_res.sub_(averaged_velocity, alpha=dt)
+                        del averaged_velocity
                 else:
                     # RF Euler step from the aggregated prediction (equivalent to
                     # averaging velocity, since v is linear in x_pred).

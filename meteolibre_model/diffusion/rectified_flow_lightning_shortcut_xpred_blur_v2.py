@@ -605,22 +605,22 @@ def full_image_generation(
             #   linear:      v = (x_t - x_pred) / t
             #   polynomial:  v = (x_t - x_pred) / (2*t)
             #   rev_poly:    v = p*(1-t)^(p-1)/(1-(1-t)^p) * (x_t - x_pred)
-            # bridge: EXACT closed-form ODE step (NOT Euler). Naive Euler with the
-            #   bridge velocity diverges via c'/c near the data end
-            #   (cp_over_c ~ sigma^2/(2 sigma_min^2) ~ 1e4, lambda*dt >> 2). The
-            #   exact step absorbs the stiff c'/c mean-reversion into an O(1)
-            #   c_next/c_t ratio:
-            #     x_{t_next} = mu_next + (x_t - mu_t) * c(t_next)/c(t)
-            #     mu_t     = (1-t)      x_pred + t      x1_init
-            #     mu_next  = (1-t_next) x_pred + t_next x1_init
+            # bridge: Euler step using the flow velocity (eq 8 in
+            #   Lim et al. 2024, arXiv:2410.03229):
+            #   u_t = (c'/c) * (x_t - mu_t) + (x1_init - x_pred)
+            #   mu_t = (1-t) * x_pred + t * x1_init
+            #   c'_t/c_t = sigma^2 * (1-2t) / (2 * c_t^2)
+            #   x_next = x_t - u_t * dt
+            #
+            # Stable with current bridge params (sigma=0.05, sigma_min=1e-2
+            # give max c'/c ≈ 12.5, so lambda*dt ≈ 0.39 < 2). The old exact
+            # closed-form step was needed when sigma_min=1e-3 made c'/c blow
+            # up to ~45000.
             if interpolation == "bridge":
-                t_next = t_val - d_const
-                c_t, _ = bridge_coeffs(t_val, bridge_sigma, bridge_sigma_min)
-                c_next, _ = bridge_coeffs(t_next, bridge_sigma, bridge_sigma_min)
-                ratio = (c_next / c_t).item()
+                c_t, cp_over_c = bridge_coeffs(t_val, bridge_sigma, bridge_sigma_min)
                 mu_t = (1.0 - t_val) * x_pred + t_val * x1_init
-                mu_next = (1.0 - t_next) * x_pred + t_next * x1_init
-                x_t = mu_next + (x_t - mu_t) * ratio
+                u_t = cp_over_c * (x_t - mu_t) + (x1_init - x_pred)
+                x_t = x_t - u_t * d_const
             else:
                 if interpolation == "polynomial":
                     s_theta = (x_t - x_pred) / (2 * t_val + 1e-8)
