@@ -153,7 +153,8 @@ def main():
     dataloader = DataLoader(
         dataset,
         batch_size=batch_size,
-        shuffle=False,
+        shuffle=False,  # file order shuffled once in Dataset.__init__ (shared
+                        # across workers) for 100% coverage + parquet locality.
         num_workers=16,  # os.cpu_count() // 2,  # Use half the available CPUs
         pin_memory=True,
     )
