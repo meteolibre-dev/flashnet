@@ -4,6 +4,7 @@ Inference engine that encapsulates the tiled inference logic.
 
 import os
 import sys
+import math
 import logging
 from pathlib import Path
 from typing import Optional, Dict, Any, Callable, Generator
@@ -180,6 +181,9 @@ class InferenceEngine:
         bridge_ode_t_eps: float = 0.0,
         poly_power: float = 10.0,
         noise_rho: float = 0.50,
+        sampler: str = "sde",
+        sde_eps: float = 0.1,
+        sde_eps_schedule: str = "t2",
         inference_seed: Optional[int] = None,
         device: Optional[str] = None
     ):
@@ -202,6 +206,18 @@ class InferenceEngine:
             poly_power: Power p for "rev_poly" (alpha=(1-t)**p). Ignored otherwise.
             noise_rho: Correlation strength rho in [0,1] for the structured
                 Gaussian prior (sqrt(rho)*shared + sqrt(1-rho)*independent).
+            sampler: "sde" (default) or "ode". "sde" integrates the
+                marginal-preserving SDE of the linear interpolant (stochastic
+                interpolants, Albergo & Vanden-Eijnden 2022; Song et al. 2021)
+                instead of the probability-flow ODE. Only implemented for
+                interpolation="linear"; any other interpolation falls back to
+                ODE with a warning.
+            sde_eps: Global SDE noise scale eps_0. 0.0 recovers the ODE
+                exactly; a sensible sweep range is ~0.05-0.5.
+            sde_eps_schedule: Time profile of eps(t): "const" (eps_0),
+                "t" (eps_0 * t), or "t2" (eps_0 * t^2, default). "t2" keeps
+                eps(t) * s_t bounded despite the score's 1/t^2 singularity
+                and vanishes at the data end so the final frame is not noisy.
             inference_seed: Optional seed for reproducible initial RF noise.
             device: Device to run inference on (auto-detected if None)
         """
@@ -217,6 +233,15 @@ class InferenceEngine:
         self.bridge_sigma_min = bridge_sigma_min
         self.poly_power = poly_power
         self.noise_rho = noise_rho
+        self.sampler = sampler
+        self.sde_eps = sde_eps
+        self.sde_eps_schedule = sde_eps_schedule
+        if self.sampler == "sde" and self.interpolation != "linear":
+            logger.warning(
+                "SDE sampler is only implemented for interpolation='linear' "
+                f"(got '{self.interpolation}'); falling back to ODE."
+            )
+            self.sampler = "ode"
         self.bridge_ode_t_eps = bridge_ode_t_eps
         self.inference_seed = inference_seed
         # Early-stop the bridge ODE at t = t_eps (set to 0.0 to integrate all the
@@ -370,6 +395,20 @@ class InferenceEngine:
         w_2d = w_2d / w_2d.max()
         return w_2d
 
+    def _sde_eps(self, t_val: float) -> float:
+        """SDE noise level eps(t) for the stochastic sampler.
+
+        eps(t) = sde_eps * g(t) with g given by sde_eps_schedule:
+            - "const": g = 1
+            - "t":     g = t
+            - "t2":    g = t^2 (default; vanishes at the data end)
+        """
+        if self.sde_eps_schedule == "const":
+            return self.sde_eps
+        if self.sde_eps_schedule == "t":
+            return self.sde_eps * t_val
+        return self.sde_eps * t_val * t_val
+
     @torch.no_grad()
     def tiled_inference(
         self,
@@ -409,6 +448,9 @@ class InferenceEngine:
         
         print("interpolation :", self.interpolation)
         print("bridge_ode_t_eps :", self.bridge_ode_t_eps)
+        print("sampler :", self.sampler)
+        if self.sampler == "sde":
+            print(f"sde_eps : {self.sde_eps} (schedule={self.sde_eps_schedule})")
 
         self.model.eval()
         self.model.to(self.device)
@@ -701,6 +743,36 @@ class InferenceEngine:
                         averaged_velocity = (x_t_full_res - averaged_x_pred) * ratio
                     else:  # linear
                         averaged_velocity = (x_t_full_res - averaged_x_pred) / t_val
+                        if self.sampler == "sde" and self.sde_eps > 0.0:
+                            eps_t = self._sde_eps(t_val)
+                            if eps_t > 0.0:
+                                # Marginal-preserving SDE for the linear path
+                                # (stochastic interpolants, Albergo &
+                                # Vanden-Eijnden 2022; Song et al. 2021).
+                                # Integrating backward in t (t: 1 -> 0):
+                                #   x_{t-dt} = x_t - [u_t - eps(t)*s_t] * dt
+                                #            + sqrt(2*eps(t)*dt) * z
+                                # with the score derived from the x-prediction:
+                                #   s_t = ((1-t)*x_pred - x_t) / t^2
+                                # eps(t) = sde_eps * t^2 (default "t2") keeps
+                                # eps(t)*s_t bounded and kills the injected
+                                # noise at the data end. sde_eps=0 recovers
+                                # the ODE exactly. The score comes from the
+                                # same patch-aggregated x_pred, so this adds
+                                # zero extra model calls.
+                                averaged_score = (
+                                    (1.0 - t_val) * averaged_x_pred - x_t_full_res
+                                ) / (t_val ** 2)
+                                averaged_velocity.sub_(averaged_score, alpha=eps_t)
+                                del averaged_score
+                                sde_noise = structured_gaussian_noise(
+                                    x_t_full_res.shape,
+                                    device=self.device,
+                                    rho=self.noise_rho,
+                                    generator=noise_generator,
+                                )
+                                x_t_full_res.add_(sde_noise, alpha=math.sqrt(2.0 * eps_t * dt))
+                                del sde_noise
                     del averaged_x_pred
                     x_t_full_res.sub_(averaged_velocity, alpha=dt)
                     del averaged_velocity
