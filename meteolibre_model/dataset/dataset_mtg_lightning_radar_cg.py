@@ -173,7 +173,7 @@ class MeteoLibreMapDataset(torch.utils.data.Dataset):
             "sat_patch_data": torch.from_numpy(sat_patch_data),
             "lightning_patch_data": torch.from_numpy(lightning_cc_cg),
             "spatial_position": torch.tensor(
-                [result["azimuth"], result["altitude"], result_noon["altitude"], lat / 10.0]
+                [result["azimuth"], result["altitude"], result_noon["altitude"], lat / 20.0]
             ),
         }
 
