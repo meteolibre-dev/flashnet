@@ -511,6 +511,7 @@ class InferenceEngine:
 
         half_steps = self.denoising_steps // 2
         current_step = 0
+        ar_step = 0
         current_high_res_context = initial_context
 
         # Debug: save endpoint prediction (x0-hat) at every denoising step
@@ -682,8 +683,8 @@ class InferenceEngine:
                 del aggregated_x_pred, weights_sum
 
                 # Debug: snapshot the full-Europe endpoint prediction (x0-hat)
-                # at every denoising step during the first AR step.
-                if debug_enabled and current_step == 0:
+                # at every denoising step during the first 4 AR steps.
+                if debug_enabled and ar_step < 4:
                     self._save_debug_endpoint(
                         averaged_x_pred,
                         t_val,
@@ -821,6 +822,7 @@ class InferenceEngine:
             del x_t_full_res
             torch.cuda.empty_cache()
             current_step += this_nb
+            ar_step += 1
 
     def _save_debug_endpoint(
         self,
@@ -834,13 +836,14 @@ class InferenceEngine:
         crop_range: slice,
         upload_fn: Optional[Callable[[str], None]] = None,
     ) -> None:
-        """Save the model's endpoint prediction (x0-hat) at a given denoising t.
+        """Save the model's endpoint prediction (x0-hat) for sat_ch1 (IR) at a
+        given denoising t, for every forecast frame in the batch.
 
-        Denormalizes the full-resolution aggregated x-prediction and writes TIFF
-        files for the first forecast frame — useful for inspecting how the
-        prediction evolves across the denoising trajectory (t=0.9 -> 0) and
-        spotting artifacts from patch averaging. Files are optionally uploaded
-        to the bucket via upload_fn.
+        Only satellite IR (channel 11, saved as sat_ch1) is written — one TIFF
+        per (t, forecast_date) — to keep debug storage small while still showing
+        how the prediction evolves across the denoising trajectory and across
+        the first few autoregressive steps. Files are optionally uploaded to
+        the bucket via upload_fn.
         """
         debug_dir = os.path.join(output_dir, "debug_endpoints")
         os.makedirs(debug_dir, exist_ok=True)
@@ -850,29 +853,37 @@ class InferenceEngine:
         # Denormalize a clone so we never touch the live inference tensor.
         sat_x = x_pred[:, :c_sat].clone()
         lightning_x = x_pred[:, c_sat:].clone()
-        sat_denorm, lightning_denorm = denormalize(sat_x, lightning_x, self.device)
-        radar_denorm = sat_denorm[:, -1]  # (1, nb, H, W) — radar is last sat channel
+        sat_denorm, _ = denormalize(sat_x, lightning_x, self.device)
 
-        # Extract first forecast frame (k=0) with the same channels as the
-        # regular output: sat [0, 11], lightning, radar.
-        sat_frame = sat_denorm[:, [0, 11], 0, :, :].cpu()       # (1, 2, H, W)
-        lightning_frame = lightning_denorm[:, :, 0, :, :].cpu()  # (1, c_lightning, H, W)
-        radar_frame = radar_denorm[:, 0:1, :, :].cpu()           # (1, 1, H, W)
+        nb = sat_denorm.shape[2]
 
-        self._save_timestep_files(
-            sat_frame,
-            lightning_frame,
-            radar_frame,
-            debug_dir,
-            pred_date,
-            geo_transform,
-            crs,
-            crop_range,
-            upload_fn,
-            filename_prefix=f"endpoint_{t_label}",
-            make_cog=False,  # skip COG for debug speed
+        # Only save sat_ch1 (IR satellite, channel index 11).
+        sat_ir = sat_denorm[:, 11, :, :, :].cpu()           # (1, nb, H, W)
+        sat_ir = sat_ir.squeeze(0).unsqueeze(1)              # (nb, 1, H, W)
+        sat_ir = self._fill_bad_pixels(sat_ir, CLIP_MIN)
+        sat_ir_np = sat_ir.squeeze(1).numpy().astype(np.float32)  # (nb, H, W)
+        sat_ir_np[sat_ir_np <= CLIP_MIN] = np.nan
+
+        common_kwargs = dict(
+            driver='GTiff', crs=crs, transform=geo_transform,
+            compress='deflate', tiled=True, blockxsize=512, blockysize=512,
         )
-        logger.info(f"  [debug] saved endpoint prediction at {t_label}")
+
+        for k in range(nb):
+            frame_date = pred_date + timedelta(minutes=10 * k)
+            base_filename = f"endpoint_{t_label}_{frame_date.strftime('%Y%m%d%H%M')}"
+            ch_path = os.path.join(debug_dir, f"{base_filename}_sat_ch1.tiff")
+
+            data = sat_ir_np[k, crop_range]
+            with rasterio.open(
+                ch_path, 'w', height=data.shape[0], width=data.shape[1],
+                count=1, dtype=data.dtype, nodata=np.nan, **common_kwargs,
+            ) as dst:
+                dst.write(data, 1)
+            if upload_fn:
+                upload_fn(ch_path)
+
+        logger.info(f"  [debug] saved sat_ch1 endpoint at {t_label} for {nb} frame(s)")
 
     def _save_timestep_files(
         self,
