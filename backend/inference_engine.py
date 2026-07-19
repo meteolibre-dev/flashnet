@@ -41,7 +41,6 @@ from meteolibre_model.diffusion.rectified_flow_lightning_shortcut_xpred_blur_v2 
     normalize,
     denormalize,
     CLIP_MIN,
-    bridge_coeffs,
     structured_gaussian_noise,
 )
 from safetensors.torch import load_file
@@ -176,11 +175,8 @@ class InferenceEngine:
         context_frames: int = 4,
         use_residual: bool = False,
         interpolation: str = "linear",
-        bridge_sigma: float = 0.05,
-        bridge_sigma_min: float = 1e-2,
-        bridge_ode_t_eps: float = 0.0,
         poly_power: float = 10.0,
-        noise_rho: float = 0.50,
+        noise_rho: float = 0.0,
         sampler: str = "sde",
         sde_eps: float = 0.1,
         sde_eps_schedule: str = "t2",
@@ -198,11 +194,7 @@ class InferenceEngine:
             context_frames: Number of context frames
             use_residual: Whether to use residual connections
             interpolation: "linear" (rectified flow), "polynomial" (alpha=1-sqrt(t)),
-                "rev_poly" (high-noise alpha=(1-t)**poly_power), or "bridge"
-                (Brownian-bridge flow matching).
-            bridge_sigma: Bridge noise scale (used only if interpolation="bridge").
-            bridge_sigma_min: Bridge endpoint variance floor (used only if
-                interpolation="bridge").
+                or "rev_poly" (high-noise alpha=(1-t)**poly_power).
             poly_power: Power p for "rev_poly" (alpha=(1-t)**p). Ignored otherwise.
             noise_rho: Correlation strength rho in [0,1] for the structured
                 Gaussian prior (sqrt(rho)*shared + sqrt(1-rho)*independent).
@@ -229,8 +221,6 @@ class InferenceEngine:
         self.context_frames = context_frames
         self.use_residual = use_residual
         self.interpolation = interpolation
-        self.bridge_sigma = bridge_sigma
-        self.bridge_sigma_min = bridge_sigma_min
         self.poly_power = poly_power
         self.noise_rho = noise_rho
         self.sampler = sampler
@@ -242,16 +232,7 @@ class InferenceEngine:
                 f"(got '{self.interpolation}'); falling back to ODE."
             )
             self.sampler = "ode"
-        self.bridge_ode_t_eps = bridge_ode_t_eps
         self.inference_seed = inference_seed
-        # Early-stop the bridge ODE at t = t_eps (set to 0.0 to integrate all the
-        # way to t=0). The bridge's c_t shrinks to sigma_min at t=0, so the
-        # model's x_pred receives an almost-clean input and collapses to a
-        # regression-to-the-mean (blurry) prediction in the last few steps.
-        # Stopping at a small but nonzero t_eps (e.g. 0.03–0.05) keeps c_t large
-        # enough for the model to produce a sharp denoising. The final output is
-        # the model's x_pred at t_eps (bypassing the ODE step entirely), which
-        # also avoids the stiff c'/c mean-reversion near the data end.
 
         if device is None:
             self.device = "cuda" if torch.cuda.is_available() else "cpu"
@@ -386,7 +367,7 @@ class InferenceEngine:
 
             return x
 
-    def _get_gaussian_weights(self, patch_size: int, sigma_scale: float = 0.2) -> torch.Tensor:
+    def _get_gaussian_weights(self, patch_size: int, sigma_scale: float = 0.3) -> torch.Tensor:
         """Generate a 2D Gaussian weight mask."""
         x = torch.linspace(-(patch_size - 1) / 2, (patch_size - 1) / 2, patch_size, device=self.device)
         sigma = sigma_scale * patch_size
@@ -447,7 +428,6 @@ class InferenceEngine:
             raise RuntimeError("Model not loaded")
 
         print("interpolation :", self.interpolation)
-        print("bridge_ode_t_eps :", self.bridge_ode_t_eps)
         print("sampler :", self.sampler)
         if self.sampler == "sde":
             print(f"sde_eps : {self.sde_eps} (schedule={self.sde_eps_schedule})")
@@ -522,34 +502,14 @@ class InferenceEngine:
             remaining = forecast_steps - current_step
             this_nb = min(nb_forecast, remaining)
 
-            if self.interpolation == "bridge":
-                # Match bridge training at t=1:
-                #   x_1 = last_context + sigma_min * eps.
-                # The fixed endpoint itself is the latest observed frame—not
-                # Gaussian noise—and is referenced by every exact ODE step.
-                # The endpoint perturbation uses the same structured Gaussian
-                # prior as the RF source noise.
-                last_context = current_high_res_context[:, :, -1:, :, :]
-                x1_init = last_context.expand(
-                    1, C, this_nb, H_big, W_big
-                ).clone()
-                endpoint_noise = structured_gaussian_noise(
-                    x1_init.shape,
-                    device=self.device,
-                    dtype=x1_init.dtype,
-                    rho=self.noise_rho,
-                    generator=noise_generator,
-                )
-                x_t_full_res = x1_init + self.bridge_sigma_min * endpoint_noise
-                del endpoint_noise
-            else:
-                x_t_full_res = structured_gaussian_noise(
-                    (1, C, this_nb, H_big, W_big),
-                    device=self.device,
-                    rho=self.noise_rho,
-                    generator=noise_generator,
-                ).clone()
-                x1_init = None
+            # Match training: structured Gaussian prior with partially
+            # shared noise across channels and temporal frames.
+            x_t_full_res = structured_gaussian_noise(
+                (1, C, this_nb, H_big, W_big),
+                device=self.device,
+                rho=self.noise_rho,
+                generator=noise_generator,
+            ).clone()
 
             if date:
                 prediction_date = date + timedelta(minutes=10 * (current_step + 1))
@@ -658,9 +618,8 @@ class InferenceEngine:
 
                     for j, (x_start, y_start) in enumerate(coords_batch):
                         # Aggregate the model prediction x_pred across overlapping
-                        # patches. For RF this is equivalent to aggregating velocity
-                        # (v is linear in x_pred); for the bridge it lets us use the
-                        # exact closed-form ODE step instead of divergent Euler.
+                        # patches. For RF this is equivalent to aggregating
+                        # velocity (v is linear in x_pred).
                         aggregated_x_pred[
                             ...,
                             y_start : y_start + self.patch_size,
@@ -697,86 +656,51 @@ class InferenceEngine:
                         debug_upload_fn,
                     )
 
-                if self.interpolation == "bridge":
-                    # Bridge Euler step using the flow velocity (eq 8 in
-                    # Lim et al. 2024, arXiv:2410.03229):
-                    #   u_t = (c'/c) * (x_t - mu_t) + (x1_init - x_pred)
-                    #   mu_t = (1-t) * x_pred + t * x1_init
-                    #   c'_t/c_t = sigma^2 * (1-2t) / (2 * c_t^2)
-                    # Euler (t decreasing 1->0):
-                    #   x_next = x_t - u_t * dt
-                    #
-                    # This is stable with the current bridge params
-                    # (sigma=0.05, sigma_min=1e-2 give max c'/c ≈ 12.5,
-                    # so lambda*dt ≈ 0.39 < 2). The old exact closed-form
-                    # step was needed when sigma_min=1e-3 made c'/c blow up
-                    # to ~45000, but that's no longer the case.
-                    #
-                    # Early-stop at t_eps (or last step): use x_pred directly
-                    # to avoid the small-t regression-to-the-mean collapse.
-                    # MUST break the loop — otherwise the model receives its
-                    # own clean x_pred as input, degrades, and compounds.
-                    last_step = (i == self.denoising_steps - 2)
-                    early_stop = (self.bridge_ode_t_eps > 0.0 and t_val <= self.bridge_ode_t_eps)
-                    if last_step or early_stop:
-                        x_t_full_res = averaged_x_pred
-                        del averaged_x_pred
-                        if early_stop and not last_step:
-                            break
-                    else:
-                        c_t, cp_over_c = bridge_coeffs(t_val, self.bridge_sigma, self.bridge_sigma_min)
-                        mu_t = (1.0 - t_val) * averaged_x_pred + t_val * x1_init
-                        # u_t = (c'/c)*(x_t - mu_t) + (x1_init - x_pred)  [eq 8]
-                        averaged_velocity = cp_over_c * (x_t_full_res - mu_t) + (x1_init - averaged_x_pred)
-                        del averaged_x_pred, mu_t
-                        x_t_full_res.sub_(averaged_velocity, alpha=dt)
-                        del averaged_velocity
-                else:
-                    # RF Euler step from the aggregated prediction (equivalent to
-                    # averaging velocity, since v is linear in x_pred).
-                    if self.interpolation == "polynomial":
-                        averaged_velocity = (x_t_full_res - averaged_x_pred) / (2 * t_val + 1e-8)
-                    elif self.interpolation == "rev_poly":
-                        # alpha=(1-t)^p  =>  dx/dt = p*(1-t)^(p-1)/(1-(1-t)^p)*(x_t-x_pred)
-                        # behaves like 1/t (linear) as t->0 and -> 0 as t->1.
-                        omt = 1.0 - t_val
-                        ratio = self.poly_power * omt ** (self.poly_power - 1) / (1.0 - omt ** self.poly_power + 1e-8)
-                        averaged_velocity = (x_t_full_res - averaged_x_pred) * ratio
-                    else:  # linear
-                        averaged_velocity = (x_t_full_res - averaged_x_pred) / t_val
-                        if self.sampler == "sde" and self.sde_eps > 0.0:
-                            eps_t = self._sde_eps(t_val)
-                            if eps_t > 0.0:
-                                # Marginal-preserving SDE for the linear path
-                                # (stochastic interpolants, Albergo &
-                                # Vanden-Eijnden 2022; Song et al. 2021).
-                                # Integrating backward in t (t: 1 -> 0):
-                                #   x_{t-dt} = x_t - [u_t - eps(t)*s_t] * dt
-                                #            + sqrt(2*eps(t)*dt) * z
-                                # with the score derived from the x-prediction:
-                                #   s_t = ((1-t)*x_pred - x_t) / t^2
-                                # eps(t) = sde_eps * t^2 (default "t2") keeps
-                                # eps(t)*s_t bounded and kills the injected
-                                # noise at the data end. sde_eps=0 recovers
-                                # the ODE exactly. The score comes from the
-                                # same patch-aggregated x_pred, so this adds
-                                # zero extra model calls.
-                                averaged_score = (
-                                    (1.0 - t_val) * averaged_x_pred - x_t_full_res
-                                ) / (t_val ** 2)
-                                averaged_velocity.sub_(averaged_score, alpha=eps_t)
-                                del averaged_score
-                                sde_noise = structured_gaussian_noise(
-                                    x_t_full_res.shape,
-                                    device=self.device,
-                                    rho=self.noise_rho,
-                                    generator=noise_generator,
-                                )
-                                x_t_full_res.add_(sde_noise, alpha=math.sqrt(2.0 * eps_t * dt))
-                                del sde_noise
-                    del averaged_x_pred
-                    x_t_full_res.sub_(averaged_velocity, alpha=dt)
-                    del averaged_velocity
+                # RF Euler step from the aggregated prediction (equivalent to
+                # averaging velocity, since v is linear in x_pred).
+                if self.interpolation == "polynomial":
+                    averaged_velocity = (x_t_full_res - averaged_x_pred) / (2 * t_val + 1e-8)
+                elif self.interpolation == "rev_poly":
+                    # alpha=(1-t)^p  =>  dx/dt = p*(1-t)^(p-1)/(1-(1-t)^p)*(x_t-x_pred)
+                    # behaves like 1/t (linear) as t->0 and -> 0 as t->1.
+                    omt = 1.0 - t_val
+                    ratio = self.poly_power * omt ** (self.poly_power - 1) / (1.0 - omt ** self.poly_power + 1e-8)
+                    averaged_velocity = (x_t_full_res - averaged_x_pred) * ratio
+                else:  # linear
+                    averaged_velocity = (x_t_full_res - averaged_x_pred) / t_val
+                    if self.sampler == "sde" and self.sde_eps > 0.0:
+                        eps_t = self._sde_eps(t_val)
+                        if eps_t > 0.0:
+                            # Marginal-preserving SDE for the linear path
+                            # (stochastic interpolants, Albergo &
+                            # Vanden-Eijnden 2022; Song et al. 2021).
+                            # Integrating backward in t (t: 1 -> 0):
+                            #   x_{t-dt} = x_t - [u_t - eps(t)*s_t] * dt
+                            #            + sqrt(2*eps(t)*dt) * z
+                            # with the score derived from the x-prediction:
+                            #   s_t = ((1-t)*x_pred - x_t) / t^2
+                            # eps(t) = sde_eps * t^2 (default "t2") keeps
+                            # eps(t)*s_t bounded and kills the injected
+                            # noise at the data end. sde_eps=0 recovers
+                            # the ODE exactly. The score comes from the
+                            # same patch-aggregated x_pred, so this adds
+                            # zero extra model calls.
+                            averaged_score = (
+                                (1.0 - t_val) * averaged_x_pred - x_t_full_res
+                            ) / (t_val ** 2)
+                            averaged_velocity.sub_(averaged_score, alpha=eps_t)
+                            del averaged_score
+                            sde_noise = structured_gaussian_noise(
+                                x_t_full_res.shape,
+                                device=self.device,
+                                rho=self.noise_rho,
+                                generator=noise_generator,
+                            )
+                            x_t_full_res.add_(sde_noise, alpha=math.sqrt(2.0 * eps_t * dt))
+                            del sde_noise
+                del averaged_x_pred
+                x_t_full_res.sub_(averaged_velocity, alpha=dt)
+                del averaged_velocity
 
                 x_t_full_res.clamp_(-7, 7)
 
@@ -817,8 +741,6 @@ class InferenceEngine:
             torch.cuda.empty_cache()
             current_high_res_context = new_context
 
-            if x1_init is not None:
-                del x1_init
             del x_t_full_res
             torch.cuda.empty_cache()
             current_step += this_nb

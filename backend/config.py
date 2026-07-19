@@ -39,13 +39,10 @@ class ModelConfig(BaseModel):
     parametrization: str = "standard"
     interpolation: str = "linear"
     poly_power: float = 10.0
-    noise_rho: float = 0.50
+    noise_rho: float = 0.
     sampler: str = "sde"  # "sde" (default) or "ode"; SDE only applies to interpolation="linear"
     sde_eps: float = 0.1  # global SDE noise scale; 0.0 recovers the ODE exactly
     sde_eps_schedule: str = "t2"  # eps(t) profile: "const" | "t" | "t2"
-    bridge_sigma: float = 0.05
-    bridge_sigma_min: float = 1e-2
-    bridge_ode_t_eps: float = 1.0 / 16  # stop bridge ODE early; 1/16≈0.0625 avoids small-t x-pred collapse
     inference_seed: Optional[int] = None
     debug_endpoint_t_values: Optional[str] = None  # comma-sep, e.g. "0.9,0.8,...,0.0"
 
@@ -105,13 +102,10 @@ class Config(BaseModel):
                 use_residual=os.getenv("USE_RESIDUAL", "False").lower() == "true",
                 interpolation=os.getenv("INTERPOLATION", "linear"),
                 poly_power=float(os.getenv("POLY_POWER", 10.0)),
-                noise_rho=float(os.getenv("NOISE_RHO", 0.50)),
+                noise_rho=float(os.getenv("NOISE_RHO", 0.0)),
                 sampler=os.getenv("SAMPLER", "sde"),
                 sde_eps=float(os.getenv("SDE_EPS", 0.1)),
                 sde_eps_schedule=os.getenv("SDE_EPS_SCHEDULE", "t2"),
-                bridge_sigma=float(os.getenv("BRIDGE_SIGMA", 0.05)),
-                bridge_sigma_min=float(os.getenv("BRIDGE_SIGMA_MIN", 1e-2)),
-                bridge_ode_t_eps=float(os.getenv("BRIDGE_ODE_T_EPS", 1.0 / 16)),
                 inference_seed=(
                     int(os.environ["INFERENCE_SEED"])
                     if os.getenv("INFERENCE_SEED") not in (None, "")

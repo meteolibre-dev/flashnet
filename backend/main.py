@@ -105,9 +105,6 @@ def run_inference(data_path: str, gcs_client=None) -> str:
         sampler=config.model.sampler,
         sde_eps=config.model.sde_eps,
         sde_eps_schedule=config.model.sde_eps_schedule,
-        bridge_ode_t_eps=config.model.bridge_ode_t_eps,
-        bridge_sigma=config.model.bridge_sigma,
-        bridge_sigma_min=config.model.bridge_sigma_min,
         inference_seed=config.model.inference_seed,
     )
 

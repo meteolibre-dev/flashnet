@@ -109,7 +109,7 @@ def denormalize_residual(x0, c_sat, device):
     return x0 * std + mean
 
 
-def structured_gaussian_noise(shape, device, dtype=torch.float32, rho=0.90, generator=None):
+def structured_gaussian_noise(shape, device, dtype=torch.float32, rho=0.50, generator=None):
     """Structured Gaussian noise with shared and independent components.
 
     .. math::
@@ -235,8 +235,6 @@ def get_x_t_rf(x0, x1, t, interpolation="linear", poly_power=10.0):
         DIFFERENT family (the exponent sits on t, not on (1-t)). Lowering its
         exponent flattens the curve and can NOT produce this high-noise cliff
         shape -- it just keeps alpha low everywhere, including near t=0.
-    - 'bridge': handled inline in trainer_step / full_image_generation (needs
-      an extra noise draw eps), see `bridge_coeffs`.
     """
     if interpolation == "linear":
         return (1 - t) * x0 + t * x1
@@ -250,39 +248,7 @@ def get_x_t_rf(x0, x1, t, interpolation="linear", poly_power=10.0):
         raise ValueError(f"Unknown interpolation schedule: {interpolation}")
 
 
-def bridge_coeffs(t, sigma, sigma_min):
-    """
-    Brownian-bridge probability path coefficients (user's convention:
-    t=1 -> noise x1, t=0 -> data x0).
-
-        c_t^2   = sigma^2 * t * (1 - t) + sigma_min^2
-        c'_t/c_t = sigma^2 * (1 - 2t) / (2 * c_t^2)
-
-    The interpolant is  x_t = (1-t) x0 + t x1 + c_t * eps,
-    and the deterministic flow velocity (used at inference) is
-        v_t = (x1 - x0) + (c'_t / c_t) * (x_t - mu_t),
-    with mu_t = (1-t) x0 + t x1.
-
-    Variance is minimal (sigma_min^2) at both endpoints and maximal
-    (sigma^2/4) in the middle t=0.5, which keeps the vector-field
-    variance low for strongly-correlated spatio-temporal data and
-    enables few-step sampling. See Lim et al. 2024,
-    "Elucidating the Design Choice of Probability Paths in Flow Matching
-    for Forecasting" (arXiv:2410.03229).
-
-    Args:
-        t: scalar or tensor (any shape).
-        sigma: bridge noise scale (max extra std ~ sigma/2 at t=0.5).
-        sigma_min: small floor > 0 for numerical stability at endpoints.
-    Returns (c_t, cp_over_c) as tensors.
-    """
-    t = torch.as_tensor(t, dtype=torch.float32)
-    var = sigma ** 2 * t * (1.0 - t) + sigma_min ** 2
-    c = torch.sqrt(var)
-    cp_over_c = sigma ** 2 * (1.0 - 2.0 * t) / (2.0 * var + 1e-12)
-    return c, cp_over_c
-
-def apply_blur_with_sigma_batched(x, blur_sigma, n_bins=8, min_kernel=0, sigma_factor=3):
+def apply_blur_with_sigma_batched(x, blur_sigma, n_bins=8, min_kernel=0, sigma_factor=2):
     """
     Vectorisé via binning des sigma.
     blur_sigma: (B,) tensor, sigma en pixels
@@ -328,14 +294,15 @@ def apply_blur_with_sigma_batched(x, blur_sigma, n_bins=8, min_kernel=0, sigma_f
 
 def trainer_step(
     model, batch, device, sigma=0.0, parametrization="standard", interpolation="linear", use_residual=True,
-    bridge_sigma=0.3, bridge_sigma_min=1e-3, bridge_wclamp=10.0,
     grad_weight=0.0,
     poly_power=10.0,
-    noise_rho=0.50,
+    noise_rho=0.,
     temporal_weight_scale=1.0,
     context_spec_noise=0.2,
-    context_spec_noise_prob=0.5,
+    context_spec_noise_prob=0.2,
     context_spec_noise_frame_ramp=0.0,
+    d_x0_blur_prob=0.5,
+    d_x0_blur_scale=5.0,
 ):
     if parametrization != "standard":
         raise ValueError("Only 'standard' parametrization is supported for x-prediction.")
@@ -364,23 +331,13 @@ def trainer_step(
 
     context_info = batch["spatial_position"]
 
-    # Bridge endpoint: instead of bridging from pure noise (t=1 -> noise),
-    # anchor the t=1 endpoint on the last known context frame so the model
-    # learns to predict the forecast starting from the most recent observation.
-    # NOTE: intended for use_residual=False, where x0 (forecast frames) and the
-    # context are in the same normalized space. With residuals the endpoint
-    # would mix spaces — do not combine bridge + residual.
-    if interpolation == "bridge":
-        last_context = x_context[:, :, model.context_frames - 1:model.context_frames]
-        x1 = last_context.expand_as(x0)
-    else:
-        # Structured Gaussian prior (partially shared across channels AND
-        # temporal frames):  eps = sqrt(rho)*eps_shared + sqrt(1-rho)*eps_indep
-        # Prevents the model's channel projection from fully suppressing the
-        # source by averaging independent channel-noise, while retaining some
-        # band-specific stochastic structure.  rho=1 collapses to the previous
-        # fully-shared construction; rho=0 recovers standard i.i.d. noise.
-        x1 = structured_gaussian_noise(x0.shape, x0.device, x0.dtype, rho=noise_rho)
+    # Structured Gaussian prior (partially shared across channels AND
+    # temporal frames):  eps = sqrt(rho)*eps_shared + sqrt(1-rho)*eps_indep
+    # Prevents the model's channel projection from fully suppressing the
+    # source by averaging independent channel-noise, while retaining some
+    # band-specific stochastic structure.  rho=1 collapses to the previous
+    # fully-shared construction; rho=0 recovers standard i.i.d. noise.
+    x1 = structured_gaussian_noise(x0.shape, x0.device, x0.dtype, rho=noise_rho)
 
     loss_sat = loss_lightning = 0.0
 
@@ -416,15 +373,7 @@ def trainer_step(
     #     context. Pixel-space additive noise breaks the smooth profile and
     #     causes catastrophic blur (sharpness ~0.22), so it is NOT used.
     #   - Inference uses CLEAN context; the augmentation is train-only.
-    #
-    # DISABLED for the bridge. FINDINGS_VIDEO.md ("manifold_noise + bridge:
-    # HURTS"): the bridge ALREADY regularizes the target via its mid-path
-    # Brownian noise + clean endpoint; layering blur/jitter context aug on top
-    # over-corrupts (rollout ED 1103 -> 1732) and produces exactly the
-    # blurrier-over-rollouts failure the bridge is meant to prevent. Use ONE
-    # regularization mechanism, not both. (sigma here is the context-aug blur
-    # scale; bridge_sigma is the separate path-noise parameter.)
-    if sigma > 0 and interpolation != "bridge":
+    if sigma > 0:
         # Per-sample blur strength on a logit-normal schedule (most samples get
         # mild blur, a long tail gets stronger blur).
         eps = torch.randn(num_emp, device=device)
@@ -464,9 +413,8 @@ def trainer_step(
     # used. Optional frame ramp: OLDER context frames (the most degraded in
     # a real rollout queue) receive proportionally more noise.
     #
-    # Train-only (inference uses clean context). DISABLED for the bridge,
-    # same as the blur/jitter aug (one regularization mechanism at a time).
-    if context_spec_noise > 0 and interpolation != "bridge":
+    # Train-only (inference uses clean context).
+    if context_spec_noise > 0:
         if sigma > 0:
             amp_draw = t_emp_blur  # correlated with the blur bundle
         else:
@@ -490,25 +438,45 @@ def trainer_step(
             spec_noise = spec_noise * frame_scale.view(1, 1, n_ctx, 1, 1)
         x_context_t = x_context_t + spec_mask * spec_amp.view(num_emp, 1, 1, 1, 1) * spec_noise
 
-    xt_emp = get_x_t_rf(x0_emp, x1_emp, t_emp.view(num_emp,1,1,1,1), interpolation, poly_power=poly_power) if interpolation != "bridge" else None
-    if interpolation == "bridge":
-        # x_t = (1-t) x0 + t x1 + c_t * eps,  c_t^2 = sigma^2 t(1-t) + sigma_min^2
-        c_t, _ = bridge_coeffs(t_emp, bridge_sigma, bridge_sigma_min)  # (B,)
-        tsh = t_emp.view(num_emp, 1, 1, 1, 1)
-        csh = c_t.view(num_emp, 1, 1, 1, 1)
-        eps_bb = structured_gaussian_noise(x0_emp.shape, x0_emp.device, x0_emp.dtype, rho=noise_rho)
-        xt_emp = (1.0 - tsh) * x0_emp + tsh * x1_emp + csh * eps_bb
+    # --- Data-component degradation D(x0) on the interpolant input ----------
+    # AR-rollout robustification for the RUNNING STATE x_t (the context augs
+    # above only cover the context frames). At inference, the data component
+    # of x_t is the model's own accumulated output — smooth / under-dispersed
+    # — while in training x_t = (1-t)*x0_clean + t*x1 has a perfect clean
+    # data component. This block degrades the DATA SIDE of the interpolant:
+    #     x_t = (1-t) * D(x0) + t * x1,     regression target = CLEAN x0,
+    # so the model learns to sharpen a degraded data component instead of
+    # trusting it. Key properties:
+    #   - D = Gaussian blur only (the dominant rollout degradation), drawn
+    #     INDEPENDENTLY of the context-aug bundle: at inference the two
+    #     degradations are not perfectly correlated (AR step 1 = clean
+    #     context + degraded x_t; late AR steps = both degraded).
+    #   - Target stays clean x0: do NOT re-derive the velocity target from
+    #     the degraded path (v = x1 - D(x0) would make the optimal
+    #     x-prediction D(x0) — a blur-reproduction model). The 1/t^2-weighted
+    #     x-loss w.r.t. the clean endpoints below is unchanged.
+    #   - No sampler change needed: for the linear path, Euler integration
+    #     still terminates at x_pred regardless of the intermediate
+    #     trajectory, so inference is untouched.
+    #   - Train-only. d_x0_blur_prob=0 disables (backward compatible).
+    if d_x0_blur_prob > 0:
+        d_mask = torch.rand(num_emp, device=device) < d_x0_blur_prob
+        x0_path = x0_emp
+        if d_mask.any():
+            # Blur only the selected subset so masked samples are EXACTLY
+            # identity (binning in apply_blur_with_sigma_batched could
+            # otherwise leak a small blur onto sigma=0 samples).
+            eps = torch.randn(int(d_mask.sum()), device=device)
+            d_draw = torch.sigmoid(1.4 + 1.8 * eps).clamp(1e-4, 1 - 1e-4)
+            d_blur_sigma = d_draw * d_x0_blur_scale  # (B_sel,)
+            x0_path = x0_emp.clone()
+            x0_path[d_mask] = apply_blur_with_sigma_batched(
+                x0_emp[d_mask], d_blur_sigma
+            )
+    else:
+        x0_path = x0_emp
 
-    # da_dt for correct v-loss weighting
-    # alpha(t) = 1 - sqrt(t)  =>  da/dt = -1 / (2 * sqrt(t))
-    if interpolation == "linear":
-        da_dt = torch.full_like(t_emp, -1.0)
-    elif interpolation == "rev_poly":  # alpha(t) = (1-t)^p  =>  da/dt = -p*(1-t)^(p-1)
-        da_dt = -poly_power * (1.0 - t_emp) ** (poly_power - 1)
-    else:  # polynomial: alpha(t) = 1 - t^(1/2)
-        da_dt = -0.5 / (t_emp ** 0.5 + 1e-8)
-
-    da_dt = da_dt.view(num_emp, 1, 1, 1, 1)
+    xt_emp = get_x_t_rf(x0_path, x1_emp, t_emp.view(num_emp,1,1,1,1), interpolation, poly_power=poly_power)
 
     # model predicts clean target (x-prediction)
     model_input_emp = torch.cat([x_context_t, xt_emp], dim=2)
@@ -526,25 +494,6 @@ def trainer_step(
     if interpolation == "polynomial":
         # da/dt = -1/(2*sqrt(t))  =>  (da/dt)^2 ∝ 1/t
         weight = (1.0 / (t_emp.view(b, 1, 1, 1, 1) + 1e-2) ** 2).clamp(0.9, 10.)
-    elif interpolation == "bridge":
-        # Bridge vloss — velocity-matching via the x-prediction
-        # reparameterization (FINDINGS_VIDEO.md "Brownian-Bridge Flow Matching").
-        #   ||v_theta - u_t||^2 = (x_pred - x0)^2 * (1 + (1-t) c'/c)^2
-        # a one-sided DATA-END upweight (huge at t->0, ~1 at t->1 and mid-path)
-        # that forces z_t usage and prevents the context-prediction collapse
-        # that plain uniform x-pred MSE falls into on easy data (FINDINGS_VIDEO.md:
-        # uniform collapses with sharp ~1.18 artifacts; vloss is REQUIRED — do
-        # NOT revert to uniform, it gives bad results).
-        #
-        # CONVENTION: this code is t=0 -> data x0, t=1 -> noise x1, the OPPOSITE
-        # of the FINDINGS_VIDEO experiment (t=0 noise, t=1 data). Under that swap
-        # the experiment's (1 - t c'/c)^2 becomes (1 + (1-t) c'/c)^2 here — both
-        # are the same physical one-sided data-end upweight. Derivation:
-        #   v_phi - u_t = (x0 - x_pred) * [1 + (1-t)(c'/c)]
-        # wclamp=10 is optimal (findings: wclamp=6 -> sharp ~1.16 artifacts).
-        _, cp_over_c = bridge_coeffs(t_emp, bridge_sigma, bridge_sigma_min)
-        wf = 1.0 + (1.0 - t_emp.view(b, 1, 1, 1, 1)) * cp_over_c.view(b, 1, 1, 1, 1)
-        weight = (wf ** 2).clamp(max=bridge_wclamp)
     else:
         # linear / rev_poly: empirical 1/t^2 upweighting of small t.
         # For 'rev_poly' the small-t region [0, ~0.1] is exactly where the
@@ -614,8 +563,6 @@ def full_image_generation(
     use_residual=True,
     schedule_power=1.0,
     poly_power=10.0,
-    bridge_sigma=0.3,
-    bridge_sigma_min=1e-3,
     noise_rho=0.90,
 ):
     """
@@ -650,25 +597,13 @@ def full_image_generation(
         context_info = batch["spatial_position"].to(device)[0:nb_element]
 
         batch_size, nb_channel, nb_context, h, w = x_context.shape
-        if interpolation == "bridge":
-            # Bridge from the last known context frame (t=1) to the forecast
-            # (t=0) instead of from pure noise. The initial state and the fixed
-            # endpoint are both the last observation, broadcast across forecast
-            # frames.
-            last_ctx_expanded = last_context.expand(
-                batch_size, nb_channel, nb_forecasted_frame, h, w
-            )
-            x_t = last_ctx_expanded.clone()
-            x1_init = last_ctx_expanded.clone()
-        else:
-            # Match training: structured Gaussian prior with partially shared
-            # noise across channels and temporal frames.
-            x_t = structured_gaussian_noise(
-                (batch_size, nb_channel, nb_forecasted_frame, h, w),
-                device=device,
-                rho=noise_rho,
-            ).clone()
-            x1_init = x_t.clone()
+        # Match training: structured Gaussian prior with partially shared
+        # noise across channels and temporal frames.
+        x_t = structured_gaussian_noise(
+            (batch_size, nb_channel, nb_forecasted_frame, h, w),
+            device=device,
+            rho=noise_rho,
+        ).clone()
 
         # Non-uniform timestep grid: t descends 1 -> 0.
         u_grid = torch.linspace(0.0, 1.0, steps + 1, device=device)
@@ -693,40 +628,22 @@ def full_image_generation(
 
             x_pred = torch.cat([sat_x_pred, lightning_x_pred], dim=1)[:, :, model.context_frames:]
 
-            # Integration step.
-            # linear/polynomial/rev_poly: Euler  x_{t-dt} = x_t - v*dt
+            # Integration step: Euler  x_{t-dt} = x_t - v*dt
             #   linear:      v = (x_t - x_pred) / t
             #   polynomial:  v = (x_t - x_pred) / (2*t)
             #   rev_poly:    v = p*(1-t)^(p-1)/(1-(1-t)^p) * (x_t - x_pred)
-            # bridge: Euler step using the flow velocity (eq 8 in
-            #   Lim et al. 2024, arXiv:2410.03229):
-            #   u_t = (c'/c) * (x_t - mu_t) + (x1_init - x_pred)
-            #   mu_t = (1-t) * x_pred + t * x1_init
-            #   c'_t/c_t = sigma^2 * (1-2t) / (2 * c_t^2)
-            #   x_next = x_t - u_t * dt
-            #
-            # Stable with current bridge params (sigma=0.05, sigma_min=1e-2
-            # give max c'/c ≈ 12.5, so lambda*dt ≈ 0.39 < 2). The old exact
-            # closed-form step was needed when sigma_min=1e-3 made c'/c blow
-            # up to ~45000.
-            if interpolation == "bridge":
-                c_t, cp_over_c = bridge_coeffs(t_val, bridge_sigma, bridge_sigma_min)
-                mu_t = (1.0 - t_val) * x_pred + t_val * x1_init
-                u_t = cp_over_c * (x_t - mu_t) + (x1_init - x_pred)
-                x_t = x_t - u_t * d_const
+            if interpolation == "polynomial":
+                s_theta = (x_t - x_pred) / (2 * t_val + 1e-8)
+            elif interpolation == "rev_poly":
+                # velocity of alpha=(1-t)^p path, expressed via x_pred:
+                #   dx/dt = p*(1-t)^(p-1) / (1-(1-t)^p) * (x_t - x_pred)
+                # -> behaves like 1/t (linear) as t->0 and like 0 as t->1.
+                omt = 1.0 - t_val
+                ratio = poly_power * omt ** (poly_power - 1) / (1.0 - omt ** poly_power + 1e-8)
+                s_theta = (x_t - x_pred) * ratio
             else:
-                if interpolation == "polynomial":
-                    s_theta = (x_t - x_pred) / (2 * t_val + 1e-8)
-                elif interpolation == "rev_poly":
-                    # velocity of alpha=(1-t)^p path, expressed via x_pred:
-                    #   dx/dt = p*(1-t)^(p-1) / (1-(1-t)^p) * (x_t - x_pred)
-                    # -> behaves like 1/t (linear) as t->0 and like 0 as t->1.
-                    omt = 1.0 - t_val
-                    ratio = poly_power * omt ** (poly_power - 1) / (1.0 - omt ** poly_power + 1e-8)
-                    s_theta = (x_t - x_pred) * ratio
-                else:
-                    s_theta = (x_t - x_pred) / t_val
-                x_t = x_t - s_theta * d_const
+                s_theta = (x_t - x_pred) / t_val
+            x_t = x_t - s_theta * d_const
             x_t = x_t.clamp(-7, 8)
 
         if use_residual:
