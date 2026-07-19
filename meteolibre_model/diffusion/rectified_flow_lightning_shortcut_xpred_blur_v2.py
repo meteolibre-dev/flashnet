@@ -164,6 +164,51 @@ def structured_gaussian_noise(shape, device, dtype=torch.float32, rho=0.90, gene
         ) + sqrt_omr * independent
 
 
+# -- Spectral ("red") context-noise augmentation ----------------------------
+# Radial-PSD fit on near-obs IR frames from 3 rollout dates (see
+# linear_18july_sde/fit_ir_psd.py):  P(k) = P0 / (1 + (k/k0)^alpha) with
+# k0 = 0.0165 cyc/px (~80 km at 0.012 deg) and alpha = 4.65. Only the SHAPE
+# is used — synthesized noise is renormalized to unit variance. The IR shape
+# is assumed representative for all satellite channels.
+SPEC_NOISE_K0 = 0.0165
+SPEC_NOISE_ALPHA = 4.65
+_spectral_filter_cache: dict = {}
+
+
+def _spectral_filter(height, width, device):
+    """sqrt(PSD) radial filter for spectral synthesis (cached per H/W/device)."""
+    key = (height, width, str(device))
+    filt = _spectral_filter_cache.get(key)
+    if filt is None:
+        fy = torch.fft.fftfreq(height, device=device).unsqueeze(1)
+        fx = torch.fft.fftfreq(width, device=device).unsqueeze(0)
+        k = torch.sqrt(fy * fy + fx * fx)
+        filt = torch.sqrt(
+            1.0 / (1.0 + (k.clamp_min(1e-8) / SPEC_NOISE_K0) ** SPEC_NOISE_ALPHA)
+        )
+        filt[0, 0] = 0.0  # kill DC — marginal/mean drift is a separate failure
+        _spectral_filter_cache[key] = filt
+    return filt
+
+
+def spectral_gaussian_noise(shape, device, dtype=torch.float32, generator=None):
+    """Unit-variance Gaussian field with the fitted IR radial PSD (red noise).
+
+    Synthesized by filtering white noise in Fourier space:
+    ``noise = IFFT(FFT(white) * sqrt(P(k)))``, then renormalized to unit
+    variance per (B, C, T) slice. FFTs run in float32; result is cast to
+    ``dtype``.
+    """
+    if len(shape) != 5:
+        raise ValueError(f"Expected a 5D (B, C, T, H, W) shape, got {shape}")
+    *_, height, width = shape
+    white = torch.randn(shape, device=device, dtype=torch.float32, generator=generator)
+    filt = _spectral_filter(height, width, device)
+    out = torch.fft.ifft2(torch.fft.fft2(white, norm="ortho") * filt, norm="ortho").real
+    out = out / out.std(dim=(-2, -1), keepdim=True).clamp_min(1e-6)
+    return out.to(dtype)
+
+
 def get_x_t_rf(x0, x1, t, interpolation="linear", poly_power=10.0):
     """
     Get the interpolated point x_t based on the chosen schedule.
@@ -245,7 +290,7 @@ def apply_blur_with_sigma_batched(x, blur_sigma, n_bins=8, min_kernel=0, sigma_f
     """
     b, c, t, h, w = x.shape
     out = torch.zeros_like(x)
-    
+
     # Discrétise blur_sigma en n_bins niveaux
     sigma_max = blur_sigma.max().item()
     bin_edges = torch.linspace(0, sigma_max + 1e-6, n_bins + 1, device=x.device)
@@ -256,7 +301,7 @@ def apply_blur_with_sigma_batched(x, blur_sigma, n_bins=8, min_kernel=0, sigma_f
         mask = bin_ids == bin_idx
         if not mask.any():
             continue
-        
+
         s = bin_centers[bin_idx].item()
         x_bin = x[mask]  # (B_bin, C, T, H, W)
         b_bin = x_bin.shape[0]
@@ -286,8 +331,11 @@ def trainer_step(
     bridge_sigma=0.3, bridge_sigma_min=1e-3, bridge_wclamp=10.0,
     grad_weight=0.0,
     poly_power=10.0,
-    noise_rho=0.90,
+    noise_rho=0.50,
     temporal_weight_scale=1.0,
+    context_spec_noise=0.2,
+    context_spec_noise_prob=0.5,
+    context_spec_noise_frame_ramp=0.0,
 ):
     if parametrization != "standard":
         raise ValueError("Only 'standard' parametrization is supported for x-prediction.")
@@ -390,13 +438,57 @@ def trainer_step(
         # structure, only the overall amplitude is perturbed.
         # Applied to only 50% of samples so the model still frequently sees
         # clean context (prevents over-regularization / loss of calibration).
-        amplitude_jitter_std = 0.20
-        amplitude_jitter_prob = 0.5
+        amplitude_jitter_std = 0.10
+        amplitude_jitter_prob = 0.1
         jitter_mask = (torch.rand(b, device=device) < amplitude_jitter_prob).view(b, 1, 1, 1, 1)
         scale = 1.0 + amplitude_jitter_std * torch.randn(b, 1, 1, 1, 1, device=device)
         x_context_t = x_context_t * (jitter_mask * scale + ~jitter_mask)
     else:
         x_context_t = x_context
+
+    # Spectrally-shaped ("red") additive context noise.
+    #
+    # Motivation (RAPSD measurements on SDE rollouts, 3 dates, see
+    # linear_18july_sde/psd_rollout.py): the AR-rollout degradation is NOT
+    # white pixel noise — it is a smooth red-spectrum anomaly field (plus
+    # marginal drift). White additive noise is maximally off-manifold for
+    # this red-spectrum data and caused the catastrophic blur collapse in
+    # earlier XPs. The red noise injects energy only where the data has
+    # power (fitted IR PSD: k0 ~ 80 km, alpha=4.65), so the per-band SNR
+    # stays balanced and the model is never pushed to discard the
+    # high-frequency context channel. IR shape assumed for all channels.
+    #
+    # Amplitude reuses the blur schedule draw (t_emp_blur) when the blur aug
+    # is active, so blur/jitter/red-noise form ONE correlated degradation
+    # bundle on the same samples; otherwise a fresh logit-normal draw is
+    # used. Optional frame ramp: OLDER context frames (the most degraded in
+    # a real rollout queue) receive proportionally more noise.
+    #
+    # Train-only (inference uses clean context). DISABLED for the bridge,
+    # same as the blur/jitter aug (one regularization mechanism at a time).
+    if context_spec_noise > 0 and interpolation != "bridge":
+        if sigma > 0:
+            amp_draw = t_emp_blur  # correlated with the blur bundle
+        else:
+            eps = torch.randn(num_emp, device=device)
+            amp_draw = torch.sigmoid(1.4 + 1.8 * eps).clamp(1e-4, 1 - 1e-4)
+        spec_amp = amp_draw * context_spec_noise  # (B,)
+        spec_mask = (
+            torch.rand(num_emp, device=device) < context_spec_noise_prob
+        ).view(num_emp, 1, 1, 1, 1)
+        spec_noise = spectral_gaussian_noise(
+            x_context_t.shape, device, x_context_t.dtype
+        )
+        if context_spec_noise_frame_ramp > 0:
+            # age: 1.0 for the OLDEST context frame -> frame_ramp for the newest
+            n_ctx = x_context_t.shape[2]
+            age = torch.linspace(1.0, 0.0, n_ctx, device=device)
+            frame_scale = (
+                context_spec_noise_frame_ramp
+                + (1.0 - context_spec_noise_frame_ramp) * age
+            )
+            spec_noise = spec_noise * frame_scale.view(1, 1, n_ctx, 1, 1)
+        x_context_t = x_context_t + spec_mask * spec_amp.view(num_emp, 1, 1, 1, 1) * spec_noise
 
     xt_emp = get_x_t_rf(x0_emp, x1_emp, t_emp.view(num_emp,1,1,1,1), interpolation, poly_power=poly_power) if interpolation != "bridge" else None
     if interpolation == "bridge":
@@ -477,7 +569,8 @@ def trainer_step(
         weight = weight * blend.view(1, 1, n_forecast, 1, 1)
 
     # direct x-loss
-    loss_sat     = (weight * (x_sat_pred_emp - x0_emp[:, :c_sat]) ** 2)[mask_emp].mean()
+    err_sat = weight * (x_sat_pred_emp - x0_emp[:, :c_sat]) ** 2
+    loss_sat     = err_sat[mask_emp].mean()
     loss_lightning = (weight * (x_light_pred_emp - x0_emp[:, c_sat:]) ** 2).mean()
 
     # --- Horizontal-gradient regularization (FastNet-style artifact suppressor) ---

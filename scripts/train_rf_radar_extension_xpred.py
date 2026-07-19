@@ -259,6 +259,9 @@ def main():
                     model, batch, device, parametrization=PARAMETRIZATION, interpolation=INTERPOLATION, sigma=sigma_noise_input, use_residual=residual,
                     noise_rho=float(params.get('noise_rho', 0.90)),
                     temporal_weight_scale=float(params.get('temporal_weight_scale', 1.0)),
+                    context_spec_noise=float(params.get('context_spec_noise', 0.0)),
+                    context_spec_noise_prob=float(params.get('context_spec_noise_prob', 0.5)),
+                    context_spec_noise_frame_ramp=float(params.get('context_spec_noise_frame_ramp', 0.0)),
                 )
 
                 accelerator.backward(loss)
