@@ -126,7 +126,7 @@ def main():
     print("sigma_noise_input: ", sigma_noise_input)
 
     ema_enabled = bool(params.get('ema_enabled', False))
-    ema_decay = float(params.get('ema_decay', 0.9995))
+    ema_decay = float(params.get('ema_decay', 0.999))
     print(f"EMA: enabled={ema_enabled}, decay={ema_decay}")
 
     gradient_clip_value = params['gradient_clip_value']
@@ -136,6 +136,7 @@ def main():
 
     hps = {"batch_size": batch_size, "learning_rate": learning_rate}
     print("residual is :", residual)
+    print("sigma_noise_input: ", sigma_noise_input)
 
     accelerator.init_trackers(
         "radar_finetune_" + id_run, config=hps
@@ -373,11 +374,11 @@ def main():
                 # stable sampling). Falls back to raw if EMA disabled.
                 if ema is not None:
                     with ema.swap(list(model_to_save.parameters())):
-                        save_file(model_to_save.state_dict(), save_path)
+                        #save_file(model_to_save.state_dict(), save_path)
                         save_file(model_to_save.state_dict(), save_path_check)
                     accelerator.print(f"Model saved (EMA) to {save_path}")
                 else:
-                    save_file(model_to_save.state_dict(), save_path)
+                    #save_file(model_to_save.state_dict(), save_path)
                     save_file(model_to_save.state_dict(), save_path_check)
                     accelerator.print(f"Model saved to {save_path}")
 
