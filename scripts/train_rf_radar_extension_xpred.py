@@ -258,13 +258,13 @@ def main():
             with accelerator.accumulate(model):
                 loss, loss_sat, loss_kpi = trainer_step(
                     model, batch, device, parametrization=PARAMETRIZATION, interpolation=INTERPOLATION, sigma=sigma_noise_input, use_residual=residual,
-                    noise_rho=float(params.get('noise_rho', 0.90)),
+                    noise_rho=float(params.get('noise_rho', 0.0)),
                     temporal_weight_scale=float(params.get('temporal_weight_scale', 1.0)),
-                    context_spec_noise=float(params.get('context_spec_noise', 0.0)),
-                    context_spec_noise_prob=float(params.get('context_spec_noise_prob', 0.5)),
+                    context_spec_noise=float(params.get('context_spec_noise', 0.2)),
+                    context_spec_noise_prob=float(params.get('context_spec_noise_prob', 0.2)),
                     context_spec_noise_frame_ramp=float(params.get('context_spec_noise_frame_ramp', 0.0)),
-                    d_x0_blur_prob=float(params.get('d_x0_blur_prob', 0.0)),
-                    d_x0_blur_scale=float(params.get('d_x0_blur_scale', 1.0)),
+                    d_x0_blur_prob=float(params.get('d_x0_blur_prob', 0.5)),
+                    d_x0_blur_scale=float(params.get('d_x0_blur_scale', 5.0)),
                 )
 
                 accelerator.backward(loss)
