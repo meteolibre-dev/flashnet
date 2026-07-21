@@ -20,7 +20,7 @@ from contextlib import contextmanager, nullcontext
 from accelerate.utils import DistributedDataParallelKwargs
 from safetensors.torch import save_file
 
-# 
+#
 #from torch.optim import Muon
 
 from safetensors.torch import load_file
@@ -41,7 +41,7 @@ from meteolibre_model.models.jit3d_dual_v2 import DualJiT3D
 config_path = os.path.join(project_root, "meteolibre_model/config/configs.yml")
 with open(config_path) as f:
     config = yaml.safe_load(f)
-params = config['model_v24_mtg_europe_lightning_radar_shortcut']
+params = config['model_v26_mtg_europe_lightning_radar_shortcut']
 
 
 class EMAModel:
@@ -120,13 +120,13 @@ def main():
     learning_rate = params['learning_rate']
     num_epochs = params['num_epochs']
     seed = params['seed'] + int(random.random() * 1000)
-    residual = bool(params.get('residual', True))
+    residual = bool(params.get('residual', False))
     sigma_noise_input = params['sigma_noise_input']
 
     print("sigma_noise_input: ", sigma_noise_input)
 
-    ema_enabled = bool(params.get('ema_enabled', True))
-    ema_decay = float(params.get('ema_decay', 0.9999))
+    ema_enabled = bool(params.get('ema_enabled', False))
+    ema_decay = float(params.get('ema_decay', 0.9995))
     print(f"EMA: enabled={ema_enabled}, decay={ema_decay}")
 
     gradient_clip_value = params['gradient_clip_value']
@@ -179,11 +179,11 @@ def main():
         """Wrapper to make a list of optimizers behave like a single one."""
         def __init__(self, optimizers):
             self.optimizers = optimizers
-        
+
         def step(self):
             for opt in self.optimizers:
                 opt.step()
-                
+
         def zero_grad(self):
             for opt in self.optimizers:
                 opt.zero_grad()
@@ -205,11 +205,11 @@ def main():
         state_dict = load_file(model_path)
         model.load_state_dict(state_dict)
 
-        model = torch.compile(model) 
+        model = torch.compile(model)
 
         # Split params: Muon only accepts strictly 2D tensors
         muon_params, adamw_params = get_grouped_params(model)
-        
+
         # 1. Muon for Transformer Internals (Matrices)
         # Note: Adjust momentum/nesterov args as per your Heavyball version if needed
         # opt_muon = Muon(muon_params, lr=learning_rate, momentum=0.95, weight_decay=0.1)
@@ -217,7 +217,7 @@ def main():
         # 2. AdamW for Conv3d, Embeddings, Norms, Biases
         # Usually AdamW needs a lower LR than Muon
         opt_adam = torch.optim.AdamW(adamw_params, lr=learning_rate / 3, weight_decay=0.01)
-        
+
         # Create a list for Accelerate
         optimizer = [opt_muon, opt_adam]
     else:
@@ -350,7 +350,7 @@ def main():
                     tb_tracker.writer.add_image(
                         "Generated vs Target (normalized)", grid_normalized, epoch
                     )
-                
+
 
 
         # This part for saving the model was already correct
