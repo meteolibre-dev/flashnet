@@ -368,7 +368,7 @@ def main():
                 os.makedirs(MODEL_DIR, exist_ok=True)
 
                 # Always keep the raw (training) weights
-                save_file(model_to_save.state_dict(), save_path_raw)
+                # save_file(model_to_save.state_dict(), save_path_raw)
 
                 # EMA weights are the primary deploy checkpoint (sharper / more
                 # stable sampling). Falls back to raw if EMA disabled.
