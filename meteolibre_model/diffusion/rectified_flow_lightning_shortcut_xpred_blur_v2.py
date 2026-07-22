@@ -301,7 +301,7 @@ def trainer_step(
     context_spec_noise=0.2,
     context_spec_noise_prob=0.2,
     context_spec_noise_frame_ramp=0.0,
-    d_x0_blur_prob=0.5,
+    d_x0_blur_prob=0.,
     d_x0_blur_scale=5.0,
 ):
     if parametrization != "standard":
