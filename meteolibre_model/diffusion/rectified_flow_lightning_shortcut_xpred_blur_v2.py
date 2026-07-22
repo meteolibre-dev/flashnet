@@ -303,6 +303,7 @@ def trainer_step(
     context_spec_noise_frame_ramp=0.0,
     d_x0_blur_prob=0.,
     d_x0_blur_scale=5.0,
+    temporal_grad_weight=0.0,
 ):
     if parametrization != "standard":
         raise ValueError("Only 'standard' parametrization is supported for x-prediction.")
@@ -531,24 +532,45 @@ def trainer_step(
     # the same per-t factor as the main x-loss, so it focuses on data-end
     # predictions (t→0) where gradients are meaningful and barely penalizes
     # near-noise samples (t→1). grad_weight=0 disables it (backward compatible).
+    # Lightning is EXCLUDED: its intermittent on/off structure makes legitimate
+    # spatial gradients large and sharp, so a squared-gradient penalty risks
+    # over-smoothing flashes instead of suppressing artifacts.
     if grad_weight > 0:
         # sat spatial gradients on (H, W) dims, masked like the main sat loss
         gy_sp, gx_sp = torch.gradient(x_sat_pred_emp, dim=(-2, -1))
         gy_st, gx_st = torch.gradient(x0_emp[:, :c_sat], dim=(-2, -1))
         grad_err_sat = (gy_sp - gy_st) ** 2 + (gx_sp - gx_st) ** 2
         loss_grad_sat = (weight * grad_err_sat)[mask_emp].mean()
-
-        # lightning spatial gradients (no mask)
-        gy_lp, gx_lp = torch.gradient(x_light_pred_emp, dim=(-2, -1))
-        gy_lt, gx_lt = torch.gradient(x0_emp[:, c_sat:], dim=(-2, -1))
-        grad_err_light = (gy_lp - gy_lt) ** 2 + (gx_lp - gx_lt) ** 2
-        loss_grad_light = (weight * grad_err_light).mean()
     else:
         loss_grad_sat = torch.tensor(0.0, device=device)
-        loss_grad_light = torch.tensor(0.0, device=device)
+
+    # --- Temporal-gradient regularization (FastNet-style, forecast-time axis) ---
+    # Complement to the spatial term above: penalize mismatches in the
+    # adjacent-frame finite difference (∂/∂T) of predicted vs target. The
+    # spatial term kills per-frame spatial artifacts; this kills frame-to-frame
+    # jitter / implausible evolution that compounds during AR rollout. On the
+    # residual target x0[f] = data[f] - last_context  =>  Δx0 = Δdata, so this
+    # is the true inter-frame evolution in normalized-residual units; the
+    # prediction lives in the same space, so the comparison is well-posed.
+    # Uses a clean forward difference so only forecast frames are involved
+    # (the context→forecast-0 transition is excluded by construction). Both
+    # adjacent frames must be valid (masked) for the error to count. Lightning
+    # excluded for the same reason as the spatial term. Backward compatible:
+    # temporal_grad_weight=0 disables it.
+    if temporal_grad_weight > 0:
+        # later-frame weight when the temporal ramp is active, else broadcast
+        wt = weight if weight.shape[2] == 1 else weight[:, :, 1:]
+
+        dT_pred = x_sat_pred_emp[:, :, 1:] - x_sat_pred_emp[:, :, :-1]
+        dT_tgt = x0_emp[:, :c_sat][:, :, 1:] - x0_emp[:, :c_sat][:, :, :-1]
+        pair_sat = mask_emp[:, :, 1:] & mask_emp[:, :, :-1]
+        loss_tgrad_sat = (wt * (dT_pred - dT_tgt) ** 2)[pair_sat].mean()
+    else:
+        loss_tgrad_sat = torch.tensor(0.0, device=device)
 
     total = (loss_sat + 5.0 * loss_lightning
-             + grad_weight * (loss_grad_sat + 5.0 * loss_grad_light))
+             + grad_weight * loss_grad_sat
+             + temporal_grad_weight * loss_tgrad_sat)
     return total, loss_sat, loss_lightning
 
 def full_image_generation(
