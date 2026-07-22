@@ -643,7 +643,7 @@ class InferenceEngine:
 
                 # Debug: snapshot the full-Europe endpoint prediction (x0-hat)
                 # at every denoising step during the first 4 AR steps.
-                if debug_enabled and ar_step < 4:
+                if debug_enabled and ar_step < 1:
                     self._save_debug_endpoint(
                         averaged_x_pred,
                         t_val,
