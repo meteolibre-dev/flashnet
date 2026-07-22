@@ -203,8 +203,12 @@ def main():
         model = DualJiT3D(**model_params)
 
         model_path = "models/checkpoint.safetensors"
-        state_dict = load_file(model_path)
-        model.load_state_dict(state_dict)
+        if os.path.exists(model_path):
+            state_dict = load_file(model_path)
+            model.load_state_dict(state_dict)
+            print(f"Loaded checkpoint from {model_path}")
+        else:
+            print(f"No checkpoint at {model_path} — starting from scratch")
 
         model = torch.compile(model)
 
