@@ -272,8 +272,8 @@ class JiT3D_Modern(nn.Module):
         context_dim=128,
         time_emb_dim=64,
         n_context_frames=4,
-        kv_ctx_noise: float = 0.3,
-        block_causal: bool = True,
+        kv_ctx_noise: float = 0.,
+        block_causal: bool = False,
         prefix_attn: bool = False,
     ):
         super().__init__()

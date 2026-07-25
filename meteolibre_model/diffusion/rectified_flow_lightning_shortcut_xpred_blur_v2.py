@@ -291,19 +291,18 @@ def apply_blur_with_sigma_batched(x, blur_sigma, n_bins=8, min_kernel=0, sigma_f
 
     return out
 
-
 def trainer_step(
-    model, batch, device, sigma=0.0, parametrization="standard", interpolation="linear", use_residual=True,
-    grad_weight=0.1,
+    model, batch, device, sigma=15.0, parametrization="standard", interpolation="linear", use_residual=True,
+    grad_weight=0.,
     poly_power=10.0,
     noise_rho=0.,
     temporal_weight_scale=1.0,
-    context_spec_noise=0.2,
+    context_spec_noise=0.,
     context_spec_noise_prob=0.2,
     context_spec_noise_frame_ramp=0.0,
     d_x0_blur_prob=0.,
     d_x0_blur_scale=5.0,
-    temporal_grad_weight=0.1,
+    temporal_grad_weight=0.,
 ):
     if parametrization != "standard":
         raise ValueError("Only 'standard' parametrization is supported for x-prediction.")

@@ -907,7 +907,7 @@ model_v26_mtg_europe_lightning_radar_shortcut:
   parametrization: "standard"
   interpolation: "linear"
   batch_size: 64
-  learning_rate: 0.00001
+  learning_rate: 0.0001
   num_epochs: 500
   seed: 42
   gen_steps: 4
