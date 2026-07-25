@@ -303,6 +303,7 @@ def trainer_step(
     d_x0_blur_prob=0.,
     d_x0_blur_scale=5.0,
     temporal_grad_weight=0.,
+    blur_t_inverse_prob=0.75,
 ):
     if parametrization != "standard":
         raise ValueError("Only 'standard' parametrization is supported for x-prediction.")
@@ -374,10 +375,25 @@ def trainer_step(
     #     causes catastrophic blur (sharpness ~0.22), so it is NOT used.
     #   - Inference uses CLEAN context; the augmentation is train-only.
     if sigma > 0:
-        # Per-sample blur strength on a logit-normal schedule (most samples get
-        # mild blur, a long tail gets stronger blur).
+        # Per-sample blur strength.
+        #
+        # Two regimes mixed per batch (blur_t_inverse_prob controls the split):
+        #   - Inverse-t coupling (default 3/4): blur ∝ (1 - t), so the context
+        #     is CLEAN at t=1 (high noise — the model must rely on context for
+        #     the big picture) and MAXIMALLY BLURRY at t=0 (low noise — the
+        #     model should trust its own x_t / local weather structure rather
+        #     than copying context details). This teaches a noise-level-
+        #     dependent reliance on context: global conditioning when x_t is
+        #     uninformative, self-reliance when x_t already carries the answer.
+        #   - Random logit-normal (default 1/4): independent of t, preserving
+        #     (high-t, blurry) and (low-t, clean) combinations so the model
+        #     doesn't overfit to the coupled schedule and stays robust to the
+        #     inference-time setting where context quality is the same across t.
         eps = torch.randn(num_emp, device=device)
-        t_emp_blur = torch.sigmoid(1.4 + 1.8 * eps).clamp(1e-4, 1 - 1e-4)
+        t_blur_random = torch.sigmoid(1.4 + 1.8 * eps).clamp(1e-4, 1 - 1e-4)
+        t_blur_inverse = (1.0 - t_emp).clamp(1e-4, 1 - 1e-4)
+        inverse_mask = torch.rand(num_emp, device=device) < blur_t_inverse_prob
+        t_emp_blur = torch.where(inverse_mask, t_blur_inverse, t_blur_random)
         blur_sigma = t_emp_blur * sigma  # (B,)
         x_context_t = apply_blur_with_sigma_batched(x_context, blur_sigma)
 
