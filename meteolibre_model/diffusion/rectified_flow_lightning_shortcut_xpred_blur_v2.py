@@ -272,7 +272,7 @@ def apply_blur_with_sigma_batched(x, blur_sigma, n_bins=8, min_kernel=0, sigma_f
         x_bin = x[mask]  # (B_bin, C, T, H, W)
         b_bin = x_bin.shape[0]
 
-        if bin_idx == 0:
+        if bin_idx <= 1:
             out[mask] = x_bin
             continue
 
