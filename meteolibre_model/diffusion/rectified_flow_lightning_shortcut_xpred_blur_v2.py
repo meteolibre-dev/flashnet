@@ -272,7 +272,7 @@ def apply_blur_with_sigma_batched(x, blur_sigma, n_bins=8, min_kernel=0, sigma_f
         x_bin = x[mask]  # (B_bin, C, T, H, W)
         b_bin = x_bin.shape[0]
 
-        if bin_idx <= 1:
+        if s <= 0.2:
             out[mask] = x_bin
             continue
 
@@ -394,6 +394,7 @@ def trainer_step(
         t_blur_inverse = (1.0 - t_emp).clamp(1e-4, 1 - 1e-4)
         inverse_mask = torch.rand(num_emp, device=device) < blur_t_inverse_prob
         t_emp_blur = torch.where(inverse_mask, t_blur_inverse, t_blur_random)
+
         blur_sigma = t_emp_blur * sigma  # (B,)
         x_context_t = apply_blur_with_sigma_batched(x_context, blur_sigma)
 
