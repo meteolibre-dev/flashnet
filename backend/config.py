@@ -104,7 +104,7 @@ class Config(BaseModel):
                 poly_power=float(os.getenv("POLY_POWER", 10.0)),
                 noise_rho=float(os.getenv("NOISE_RHO", 0.0)),
                 sampler=os.getenv("SAMPLER", "sde"),
-                sde_eps=float(os.getenv("SDE_EPS", 0.35)),
+                sde_eps=float(os.getenv("SDE_EPS", 0.1)),
                 sde_eps_schedule=os.getenv("SDE_EPS_SCHEDULE", "t2"),
                 inference_seed=(
                     int(os.environ["INFERENCE_SEED"])
