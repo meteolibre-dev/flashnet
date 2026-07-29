@@ -269,6 +269,7 @@ def main():
                     context_spec_noise_frame_ramp=float(params.get('context_spec_noise_frame_ramp', 0.0)),
                     d_x0_blur_prob=float(params.get('d_x0_blur_prob', 0.0)),
                     d_x0_blur_scale=float(params.get('d_x0_blur_scale', 5.0)),
+                    blur_t_inverse_prob=float(params.get('blur_t_inverse_prob', 0.75)),
                 )
 
                 accelerator.backward(loss)
