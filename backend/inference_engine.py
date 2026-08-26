@@ -754,6 +754,8 @@ class InferenceEngine:
                 c_sat = hf.attrs["num_sat_channels"] + 1 + hf.attrs["num_radar_channels"]
                 c_lightning = hf.attrs["num_lightning_channels"]
                 c_radar = hf.attrs["num_radar_channels"]
+                h5_lon_min = float(hf.attrs.get("lon_min", -10.0))
+                h5_lat_max = float(hf.attrs.get("lat_max", 65.0))
 
             if num_frames < self.context_frames:
                 raise ValueError(
@@ -806,8 +808,8 @@ class InferenceEngine:
             crop_start = 450
             crop_end = 2600
             crop_range = slice(crop_start, crop_end)
-            lat_max_shifted = 65.0 - (crop_start * 0.012)
-            geo_transform = rasterio.transform.from_origin(-10.0, lat_max_shifted, 0.012, 0.012)
+            lat_max_shifted = h5_lat_max - (crop_start * 0.012)
+            geo_transform = rasterio.transform.from_origin(h5_lon_min, lat_max_shifted, 0.012, 0.012)
             crs = "EPSG:4326"
 
             # Drive the generator and dispatch I/O to a thread pool so that
