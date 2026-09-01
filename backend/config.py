@@ -38,6 +38,13 @@ class ModelConfig(BaseModel):
     use_residual: bool = False
     parametrization: str = "standard"
     interpolation: str = "linear"
+    poly_power: float = 10.0
+    noise_rho: float = 0.
+    sampler: str = "sde"  # "sde" (default) or "ode"; SDE only applies to interpolation="linear"
+    sde_eps: float = 0.1  # global SDE noise scale; 0.0 recovers the ODE exactly
+    sde_eps_schedule: str = "t2"  # eps(t) profile: "const" | "t" | "t2"
+    inference_seed: Optional[int] = None
+    debug_endpoint_t_values: Optional[str] = None  # comma-sep, e.g. "0.9,0.8,...,0.0"
 
 
 class ServerConfig(BaseModel):
@@ -94,6 +101,17 @@ class Config(BaseModel):
                 context_frames=int(os.getenv("CONTEXT_FRAMES", 4)),
                 use_residual=os.getenv("USE_RESIDUAL", "False").lower() == "true",
                 interpolation=os.getenv("INTERPOLATION", "linear"),
+                poly_power=float(os.getenv("POLY_POWER", 10.0)),
+                noise_rho=float(os.getenv("NOISE_RHO", 0.0)),
+                sampler=os.getenv("SAMPLER", "sde"),
+                sde_eps=float(os.getenv("SDE_EPS", 0.1)),
+                sde_eps_schedule=os.getenv("SDE_EPS_SCHEDULE", "t2"),
+                inference_seed=(
+                    int(os.environ["INFERENCE_SEED"])
+                    if os.getenv("INFERENCE_SEED") not in (None, "")
+                    else None
+                ),
+                debug_endpoint_t_values=os.getenv("DEBUG_ENDPOINT_T_VALUES"),
             ),
             server=ServerConfig(
                 host=os.getenv("SERVER_HOST", "0.0.0.0"),

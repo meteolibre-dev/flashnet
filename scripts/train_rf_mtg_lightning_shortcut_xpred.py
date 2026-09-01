@@ -19,7 +19,7 @@ from safetensors.torch import save_file
 
 # custom optimizer TO REMOVE ?
 #from heavyball import ForeachSOAP, ForeachMuon
-from torch.optim import Muon
+#from torch.optim import Muon
 
 from safetensors.torch import load_file
 
@@ -41,7 +41,7 @@ from meteolibre_model.models.jit3d_dual_v2 import DualJiT3D
 config_path = os.path.join(project_root, "meteolibre_model/config/configs.yml")
 with open(config_path) as f:
     config = yaml.safe_load(f)
-params = config['model_v16_mtg_world_lightning_shortcut']
+params = config['model_v26_mtg_world_lightning_shortcut']
 
 def main():
     # Initialize Accelerator with bfloat16 precision and logging
@@ -75,6 +75,7 @@ def main():
 
     hps = {"batch_size": batch_size, "learning_rate": learning_rate}
     print("residual is :", residual)
+    print("sigma_noise_input: ", sigma_noise_input)
 
     accelerator.init_trackers(
         "lightning_shortcut-xpred_" + id_run, config=hps
@@ -117,11 +118,11 @@ def main():
         """Wrapper to make a list of optimizers behave like a single one."""
         def __init__(self, optimizers):
             self.optimizers = optimizers
-        
+
         def step(self):
             for opt in self.optimizers:
                 opt.step()
-                
+
         def zero_grad(self):
             for opt in self.optimizers:
                 opt.zero_grad()
@@ -137,32 +138,33 @@ def main():
     if params["model_type"] == "jit":
         model = DualJiT3D(**model_params)
 
+        model_path = "models/checkpoint.safetensors"
+        state_dict = load_file(model_path)
+        model.load_state_dict(state_dict)
+
         model = torch.compile(model)
 
         # Split params: Muon only accepts strictly 2D tensors
         muon_params, adamw_params = get_grouped_params(model)
-        
+
         # 1. Muon for Transformer Internals (Matrices)
         # Note: Adjust momentum/nesterov args as per your Heavyball version if needed
-        opt_muon = Muon(muon_params, lr=learning_rate, momentum=0.95, weight_decay=0.1)
-        #opt_muon = torch.optim.AdamW(muon_params, lr=learning_rate, weight_decay=0.01)
+        #opt_muon = Muon(muon_params, lr=learning_rate, momentum=0.95, weight_decay=0.1)
+        opt_muon = torch.optim.AdamW(muon_params, lr=learning_rate, weight_decay=0.01)
 
         # 2. AdamW for Conv3d, Embeddings, Norms, Biases
         # Usually AdamW needs a lower LR than Muon
         opt_adam = torch.optim.AdamW(adamw_params, lr=learning_rate / 3, weight_decay=0.01)
-        
+
         # Create a list for Accelerate
         optimizer = [opt_muon, opt_adam]
-        
+
     else:
         #model = DualUNet3DFiLM(**model_params)
         #optimizer = ForeachSOAP(model.parameters(), lr=learning_rate, foreach=False, warmup_steps=100)
         exit()
 
-    model_path = "models/models_world_shortcut/model_v16_mtg_world_lightning_shortcut_e120.safetensors"
-    state_dict = load_file(model_path)
-    
-    model.load_state_dict(state_dict)
+
 
     model, optimizer, dataloader = accelerator.prepare(model, optimizer, dataloader)
 
@@ -186,7 +188,8 @@ def main():
             # Perform training step
             with accelerator.accumulate(model):
                 loss, loss_sat, loss_kpi = trainer_step(
-                    model, batch, device, parametrization=PARAMETRIZATION, interpolation=INTERPOLATION, sigma=sigma_noise_input, use_residual=residual
+                    model, batch, device, parametrization=PARAMETRIZATION,
+                    interpolation=INTERPOLATION, sigma=sigma_noise_input, use_residual=residual
                 )
 
                 accelerator.backward(loss)
@@ -261,7 +264,7 @@ def main():
                     tb_tracker.writer.add_image(
                         "Generated vs Target (normalized)", grid_normalized, epoch
                     )
-                
+
 
 
         # This part for saving the model was already correct

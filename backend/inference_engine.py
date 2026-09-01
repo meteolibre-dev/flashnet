@@ -4,6 +4,7 @@ Inference engine that encapsulates the tiled inference logic.
 
 import os
 import sys
+import math
 import logging
 from pathlib import Path
 from typing import Optional, Dict, Any, Callable, Generator
@@ -40,6 +41,7 @@ from meteolibre_model.diffusion.rectified_flow_lightning_shortcut_xpred_blur_v2 
     normalize,
     denormalize,
     CLIP_MIN,
+    structured_gaussian_noise,
 )
 from safetensors.torch import load_file
 
@@ -86,7 +88,7 @@ def convert_to_cog(input_path: str, delete_original: bool = True) -> str:
             return 256  # fallback
 
         block_size = min(get_optimal_block_size(height), get_optimal_block_size(width), 512)
-        
+
         logger.info(f"Using block size {block_size}x{block_size} for {width}x{height} image")
 
         # Use the deflate profile (already has dtype, compress, tiled, blockxsize, blockysize)
@@ -173,6 +175,12 @@ class InferenceEngine:
         context_frames: int = 4,
         use_residual: bool = False,
         interpolation: str = "linear",
+        poly_power: float = 10.0,
+        noise_rho: float = 0.0,
+        sampler: str = "sde",
+        sde_eps: float = 0.1,
+        sde_eps_schedule: str = "t2",
+        inference_seed: Optional[int] = None,
         device: Optional[str] = None
     ):
         """Initialize the inference engine.
@@ -185,6 +193,24 @@ class InferenceEngine:
             batch_size: Batch size for processing patches
             context_frames: Number of context frames
             use_residual: Whether to use residual connections
+            interpolation: "linear" (rectified flow), "polynomial" (alpha=1-sqrt(t)),
+                or "rev_poly" (high-noise alpha=(1-t)**poly_power).
+            poly_power: Power p for "rev_poly" (alpha=(1-t)**p). Ignored otherwise.
+            noise_rho: Correlation strength rho in [0,1] for the structured
+                Gaussian prior (sqrt(rho)*shared + sqrt(1-rho)*independent).
+            sampler: "sde" (default) or "ode". "sde" integrates the
+                marginal-preserving SDE of the linear interpolant (stochastic
+                interpolants, Albergo & Vanden-Eijnden 2022; Song et al. 2021)
+                instead of the probability-flow ODE. Only implemented for
+                interpolation="linear"; any other interpolation falls back to
+                ODE with a warning.
+            sde_eps: Global SDE noise scale eps_0. 0.0 recovers the ODE
+                exactly; a sensible sweep range is ~0.05-0.5.
+            sde_eps_schedule: Time profile of eps(t): "const" (eps_0),
+                "t" (eps_0 * t), or "t2" (eps_0 * t^2, default). "t2" keeps
+                eps(t) * s_t bounded despite the score's 1/t^2 singularity
+                and vanishes at the data end so the final frame is not noisy.
+            inference_seed: Optional seed for reproducible initial RF noise.
             device: Device to run inference on (auto-detected if None)
         """
         self.model_path = model_path
@@ -195,6 +221,18 @@ class InferenceEngine:
         self.context_frames = context_frames
         self.use_residual = use_residual
         self.interpolation = interpolation
+        self.poly_power = poly_power
+        self.noise_rho = noise_rho
+        self.sampler = sampler
+        self.sde_eps = sde_eps
+        self.sde_eps_schedule = sde_eps_schedule
+        if self.sampler == "sde" and self.interpolation != "linear":
+            logger.warning(
+                "SDE sampler is only implemented for interpolation='linear' "
+                f"(got '{self.interpolation}'); falling back to ODE."
+            )
+            self.sampler = "ode"
+        self.inference_seed = inference_seed
 
         if device is None:
             self.device = "cuda" if torch.cuda.is_available() else "cpu"
@@ -303,30 +341,30 @@ class InferenceEngine:
             mask = x <= threshold
             if not mask.any():
                 return x
-            
+
             # Kernel for sum of neighbors (exclude center)
             # 3x3 kernel with center 0, others 1
             channels = x.shape[1]
             kernel = torch.ones(channels, 1, 3, 3, device=x.device, dtype=x.dtype)
             kernel[..., 1, 1] = 0
-            
+
             # Valid pixels
             valid_x = torch.where(mask, torch.tensor(0.0, device=x.device, dtype=x.dtype), x)
             valid_mask = (~mask).to(x.dtype)
-            
+
             # Sum of valid neighbors
             sum_neighbors = F.conv2d(valid_x, kernel, padding=1, groups=channels)
-            
+
             # Count of valid neighbors
             count_neighbors = F.conv2d(valid_mask, kernel, padding=1, groups=channels)
-            
+
             # Avoid division by zero
             avg_neighbors = sum_neighbors / (count_neighbors + 1e-6)
-            
+
             # Replace bad pixels where we have valid neighbors
             fill_mask = mask & (count_neighbors > 0)
             x = torch.where(fill_mask, avg_neighbors, x)
-            
+
             return x
 
     def _get_gaussian_weights(self, patch_size: int, sigma_scale: float = 0.3) -> torch.Tensor:
@@ -337,6 +375,20 @@ class InferenceEngine:
         w_2d = w_1d.unsqueeze(1) * w_1d.unsqueeze(0)
         w_2d = w_2d / w_2d.max()
         return w_2d
+
+    def _sde_eps(self, t_val: float) -> float:
+        """SDE noise level eps(t) for the stochastic sampler.
+
+        eps(t) = sde_eps * g(t) with g given by sde_eps_schedule:
+            - "const": g = 1
+            - "t":     g = t
+            - "t2":    g = t^2 (default; vanishes at the data end)
+        """
+        if self.sde_eps_schedule == "const":
+            return self.sde_eps
+        if self.sde_eps_schedule == "t":
+            return self.sde_eps * t_val
+        return self.sde_eps * t_val * t_val
 
     @torch.no_grad()
     def tiled_inference(
@@ -349,6 +401,11 @@ class InferenceEngine:
         c_sat: int = 18,
         c_lightning: int = 2,
         c_radar: int = 1,
+        debug_endpoint_t_values: Optional[list[float]] = None,
+        debug_upload_fn: Optional[Callable[[str], None]] = None,
+        debug_geo_transform=None,
+        debug_crs: str = "EPSG:4326",
+        debug_crop_range: Optional[slice] = None,
     ) -> Generator[tuple[torch.Tensor, torch.Tensor, torch.Tensor], None, None]:
         """Run tiled inference for weather forecasting.
 
@@ -370,11 +427,21 @@ class InferenceEngine:
         if self.model is None:
             raise RuntimeError("Model not loaded")
 
+        print("interpolation :", self.interpolation)
+        print("sampler :", self.sampler)
+        if self.sampler == "sde":
+            print(f"sde_eps : {self.sde_eps} (schedule={self.sde_eps_schedule})")
+
         self.model.eval()
         self.model.to(self.device)
 
         _, C, T_ctx, H_big, W_big = initial_context.shape
-        x_t_full_res = torch.randn(1, C, nb_forecast, H_big, W_big, device=self.device)
+        noise_generator = None
+        if self.inference_seed is not None:
+            generator_device = "cuda" if str(self.device).startswith("cuda") else "cpu"
+            noise_generator = torch.Generator(device=generator_device)
+            noise_generator.manual_seed(self.inference_seed)
+            logger.info(f"Using inference noise seed {self.inference_seed}")
 
         patch_weights = self._get_gaussian_weights(self.patch_size)
         patch_weights = patch_weights.view(1, 1, 1, self.patch_size, self.patch_size)
@@ -424,11 +491,25 @@ class InferenceEngine:
 
         half_steps = self.denoising_steps // 2
         current_step = 0
+        ar_step = 0
         current_high_res_context = initial_context
+
+        # Debug: save endpoint prediction (x0-hat) at every denoising step
+        # during the first AR step, labeled with the actual t_val.
+        debug_enabled = debug_endpoint_t_values is not None
 
         while current_step < forecast_steps:
             remaining = forecast_steps - current_step
             this_nb = min(nb_forecast, remaining)
+
+            # Match training: structured Gaussian prior with partially
+            # shared noise across channels and temporal frames.
+            x_t_full_res = structured_gaussian_noise(
+                (1, C, this_nb, H_big, W_big),
+                device=self.device,
+                rho=self.noise_rho,
+                generator=noise_generator,
+            ).clone()
 
             if date:
                 prediction_date = date + timedelta(minutes=10 * (current_step + 1))
@@ -441,7 +522,7 @@ class InferenceEngine:
             for i in tqdm(range(self.denoising_steps), desc="Denoising"):
                 torch.cuda.empty_cache()
                 # Use bfloat16 for accumulation to save memory
-                aggregated_velocity = torch.zeros(
+                aggregated_x_pred = torch.zeros(
                     1, C, this_nb, H_big, W_big, device=self.device, dtype=torch.bfloat16
                 )
                 weights_sum = torch.zeros(
@@ -536,24 +617,14 @@ class InferenceEngine:
                     pw = patch_weights.to(torch.bfloat16)
 
                     for j, (x_start, y_start) in enumerate(coords_batch):
-                        x_t_patch = x_t_full_res[
+                        # Aggregate the model prediction x_pred across overlapping
+                        # patches. For RF this is equivalent to aggregating
+                        # velocity (v is linear in x_pred).
+                        aggregated_x_pred[
                             ...,
                             y_start : y_start + self.patch_size,
                             x_start : x_start + self.patch_size,
-                        ].to(torch.bfloat16)
-
-                        # s_theta = (x_t - x_pred) / t  (linear)
-                        # s_theta = (x_t - x_pred) / (2 * t)  (polynomial)
-                        if self.interpolation == "polynomial":
-                            v_patch = (x_t_patch - x_pred_batch[j : j + 1]) / (2 * t_val + 1e-8)
-                        else:
-                            v_patch = (x_t_patch - x_pred_batch[j : j + 1]) / t_val
-
-                        aggregated_velocity[
-                            ...,
-                            y_start : y_start + self.patch_size,
-                            x_start : x_start + self.patch_size,
-                        ] += v_patch * pw
+                        ] += x_pred_batch[j : j + 1] * pw
 
                         weights_sum[
                             ...,
@@ -564,18 +635,74 @@ class InferenceEngine:
 
                 weights_sum[weights_sum == 0] = 1.0
                 # In-place average in bfloat16 to save memory
-                aggregated_velocity.div_(weights_sum)
+                aggregated_x_pred.div_(weights_sum)
 
                 # Convert back to float32 for the update step
-                # We do it this way to ensure high precision for the Euler step
-                averaged_velocity = aggregated_velocity.float()
-                del aggregated_velocity, weights_sum
+                averaged_x_pred = aggregated_x_pred.float()
+                del aggregated_x_pred, weights_sum
 
-                # x_t = x_t - s_theta * dt
+                # Debug: snapshot the full-Europe endpoint prediction (x0-hat)
+                # at every denoising step during the first 4 AR steps.
+                if debug_enabled and ar_step < 1:
+                    self._save_debug_endpoint(
+                        averaged_x_pred,
+                        t_val,
+                        c_sat,
+                        output_dir or ".",
+                        prediction_date,
+                        debug_geo_transform,
+                        debug_crs,
+                        debug_crop_range or slice(None),
+                        debug_upload_fn,
+                    )
+
+                # RF Euler step from the aggregated prediction (equivalent to
+                # averaging velocity, since v is linear in x_pred).
+                if self.interpolation == "polynomial":
+                    averaged_velocity = (x_t_full_res - averaged_x_pred) / (2 * t_val + 1e-8)
+                elif self.interpolation == "rev_poly":
+                    # alpha=(1-t)^p  =>  dx/dt = p*(1-t)^(p-1)/(1-(1-t)^p)*(x_t-x_pred)
+                    # behaves like 1/t (linear) as t->0 and -> 0 as t->1.
+                    omt = 1.0 - t_val
+                    ratio = self.poly_power * omt ** (self.poly_power - 1) / (1.0 - omt ** self.poly_power + 1e-8)
+                    averaged_velocity = (x_t_full_res - averaged_x_pred) * ratio
+                else:  # linear
+                    averaged_velocity = (x_t_full_res - averaged_x_pred) / t_val
+                    if self.sampler == "sde" and self.sde_eps > 0.0:
+                        eps_t = self._sde_eps(t_val)
+                        if eps_t > 0.0:
+                            # Marginal-preserving SDE for the linear path
+                            # (stochastic interpolants, Albergo &
+                            # Vanden-Eijnden 2022; Song et al. 2021).
+                            # Integrating backward in t (t: 1 -> 0):
+                            #   x_{t-dt} = x_t - [u_t - eps(t)*s_t] * dt
+                            #            + sqrt(2*eps(t)*dt) * z
+                            # with the score derived from the x-prediction:
+                            #   s_t = ((1-t)*x_pred - x_t) / t^2
+                            # eps(t) = sde_eps * t^2 (default "t2") keeps
+                            # eps(t)*s_t bounded and kills the injected
+                            # noise at the data end. sde_eps=0 recovers
+                            # the ODE exactly. The score comes from the
+                            # same patch-aggregated x_pred, so this adds
+                            # zero extra model calls.
+                            averaged_score = (
+                                (1.0 - t_val) * averaged_x_pred - x_t_full_res
+                            ) / (t_val ** 2)
+                            averaged_velocity.sub_(averaged_score, alpha=eps_t)
+                            del averaged_score
+                            sde_noise = structured_gaussian_noise(
+                                x_t_full_res.shape,
+                                device=self.device,
+                                rho=self.noise_rho,
+                                generator=noise_generator,
+                            )
+                            x_t_full_res.add_(sde_noise, alpha=math.sqrt(2.0 * eps_t * dt))
+                            del sde_noise
+                del averaged_x_pred
                 x_t_full_res.sub_(averaged_velocity, alpha=dt)
-                x_t_full_res.clamp_(-7, 7)
-
                 del averaged_velocity
+
+                x_t_full_res.clamp_(-7, 7)
 
             torch.cuda.empty_cache()
 
@@ -616,8 +743,69 @@ class InferenceEngine:
 
             del x_t_full_res
             torch.cuda.empty_cache()
-            x_t_full_res = torch.randn(1, C, nb_forecast, H_big, W_big, device=self.device)
             current_step += this_nb
+            ar_step += 1
+
+    def _save_debug_endpoint(
+        self,
+        x_pred: torch.Tensor,
+        t_val: float,
+        c_sat: int,
+        output_dir: str,
+        pred_date: datetime,
+        geo_transform,
+        crs: str,
+        crop_range: slice,
+        upload_fn: Optional[Callable[[str], None]] = None,
+    ) -> None:
+        """Save the model's endpoint prediction (x0-hat) for sat_ch1 (IR) at a
+        given denoising t, for every forecast frame in the batch.
+
+        Only satellite IR (channel 11, saved as sat_ch1) is written — one TIFF
+        per (t, forecast_date) — to keep debug storage small while still showing
+        how the prediction evolves across the denoising trajectory and across
+        the first few autoregressive steps. Files are optionally uploaded to
+        the bucket via upload_fn.
+        """
+        debug_dir = os.path.join(output_dir, "debug_endpoints")
+        os.makedirs(debug_dir, exist_ok=True)
+
+        t_label = f"t{t_val:.4f}"
+
+        # Denormalize a clone so we never touch the live inference tensor.
+        sat_x = x_pred[:, :c_sat].clone()
+        lightning_x = x_pred[:, c_sat:].clone()
+        sat_denorm, _ = denormalize(sat_x, lightning_x, self.device)
+
+        nb = sat_denorm.shape[2]
+
+        # Only save sat_ch1 (IR satellite, channel index 11).
+        sat_ir = sat_denorm[:, 11, :, :, :].cpu()           # (1, nb, H, W)
+        sat_ir = sat_ir.squeeze(0).unsqueeze(1)              # (nb, 1, H, W)
+        sat_ir = self._fill_bad_pixels(sat_ir, CLIP_MIN)
+        sat_ir_np = sat_ir.squeeze(1).numpy().astype(np.float32)  # (nb, H, W)
+        sat_ir_np[sat_ir_np <= CLIP_MIN] = np.nan
+
+        common_kwargs = dict(
+            driver='GTiff', crs=crs, transform=geo_transform,
+            compress='deflate', tiled=True, blockxsize=512, blockysize=512,
+        )
+
+        for k in range(nb):
+            frame_date = pred_date + timedelta(minutes=10 * k)
+            base_filename = f"endpoint_{t_label}_{frame_date.strftime('%Y%m%d%H%M')}"
+            ch_path = os.path.join(debug_dir, f"{base_filename}_sat_ch1.tiff")
+
+            data = sat_ir_np[k, crop_range]
+            with rasterio.open(
+                ch_path, 'w', height=data.shape[0], width=data.shape[1],
+                count=1, dtype=data.dtype, nodata=np.nan, **common_kwargs,
+            ) as dst:
+                dst.write(data, 1)
+            if upload_fn:
+                upload_fn(ch_path)
+
+        logger.info(f"  [debug] saved sat_ch1 endpoint at {t_label} for {nb} frame(s)")
 
     def _save_timestep_files(
         self,
@@ -630,13 +818,15 @@ class InferenceEngine:
         crs: str,
         crop_range: slice,
         upload_fn: Optional[Callable[[str], None]] = None,
+        filename_prefix: str = "forecast",
+        make_cog: bool = True,
     ) -> list:
         """Write TIFF files for one forecast timestep and optionally upload them.
 
         This is designed to run in a background thread so GPU inference can
         proceed concurrently.
         """
-        base_filename = f"forecast_{pred_date.strftime('%Y%m%d%H%M')}"
+        base_filename = f"{filename_prefix}_{pred_date.strftime('%Y%m%d%H%M')}"
         saved = []
 
         sat_np = self._fill_bad_pixels(sat_frame, CLIP_MIN).squeeze(0).numpy().astype(np.float32)
@@ -660,7 +850,8 @@ class InferenceEngine:
                 nodata=np.nan, **common_kwargs,
             ) as dst:
                 dst.write(sat_np[ch, crop_range], 1)
-            convert_to_cog(ch_path)
+            if make_cog:
+                convert_to_cog(ch_path)
             if upload_fn:
                 upload_fn(ch_path)
             saved.append(ch_path)
@@ -672,7 +863,8 @@ class InferenceEngine:
             nodata=-9999, **common_kwargs,
         ) as dst:
             dst.write(lightning_np[0, crop_range], 1)
-        convert_to_cog(lightning_path)
+        if make_cog:
+            convert_to_cog(lightning_path)
         if upload_fn:
             upload_fn(lightning_path)
         saved.append(lightning_path)
@@ -684,7 +876,8 @@ class InferenceEngine:
             nodata=np.nan, **common_kwargs,
         ) as dst:
             dst.write(radar_np[crop_range], 1)
-        convert_to_cog(radar_path)
+        if make_cog:
+            convert_to_cog(radar_path)
         if upload_fn:
             upload_fn(radar_path)
         saved.append(radar_path)
@@ -699,6 +892,7 @@ class InferenceEngine:
         forecast_steps: int = 18,
         nb_forecast: int = 3,
         upload_fn: Optional[Callable[[str], None]] = None,
+        debug_endpoint_t_values: Optional[list[float]] = None,
     ) -> InferenceResult:
         """Run full inference pipeline.
 
@@ -812,6 +1006,10 @@ class InferenceEngine:
             geo_transform = rasterio.transform.from_origin(h5_lon_min, lat_max_shifted, 0.012, 0.012)
             crs = "EPSG:4326"
 
+            # Full-image geo transform for debug endpoint snapshots (no crop
+            # offset — the uncropped top-left is at lat 65.0).
+            debug_geo_transform = rasterio.transform.from_origin(-10.0, 65.0, 0.012, 0.012)
+
             # Drive the generator and dispatch I/O to a thread pool so that
             # TIFF writing + COG conversion + GCS upload overlap with GPU inference.
             output_files = []
@@ -824,6 +1022,12 @@ class InferenceEngine:
                     forecast_steps=forecast_steps,
                     nb_forecast=nb_forecast,
                     date=initial_date,
+                    output_dir=output_dir,
+                    debug_endpoint_t_values=debug_endpoint_t_values,
+                    debug_upload_fn=upload_fn,
+                    debug_geo_transform=debug_geo_transform,
+                    debug_crs=crs,
+                    debug_crop_range=slice(None),  # full Europe, no crop
                 ):
                     batch_nb = sat_batch.shape[2]
                     for k in range(batch_nb):
