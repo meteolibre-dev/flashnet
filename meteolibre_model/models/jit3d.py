@@ -320,7 +320,7 @@ class JiT3D_Modern(nn.Module):
         time_emb_dim=64,
         n_context_frames=4,         # how many frames are "context" at the start of x
         # --- Corruption hyperparams ---
-        corruption_prob: float = 0.5,
+        corruption_prob: float = 0.0,
         embed_noise_scale: float = 0.10,
         block0_noise_scale: float = 0.05,
         # --- adaLN(-Zero) conditioning (DiT-style per-block modulation) ---
@@ -342,7 +342,7 @@ class JiT3D_Modern(nn.Module):
         #   only through the modulation heads).
         # adaln_rank: low-rank bottleneck of the heads (+~8.6M params at 768/128).
         # adaln_gate_init: initial residual-gate value (see recipes above).
-        use_adaln: bool = False,
+        use_adaln: bool = True,
         cond_additive: bool = True,
         adaln_rank: int = 128,
         adaln_gate_init: float = 1.0,

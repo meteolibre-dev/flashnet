@@ -170,7 +170,7 @@ STD_CHANNEL_WORLD_ELEVATION_RADAR = torch.tensor(
         1.0652865,
         4.8988175,
         400.,
-        15.,
+        20.,
     ]
 )
 
