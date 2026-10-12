@@ -143,9 +143,9 @@ def main():
         print("Jit model")
         model = DualJiT3D(**model_params)
 
-        # model_path = "models/epoch_91_mtg_meteofrance_.safetensors"
-        #state_dict = load_file(model_path)
-        #model.load_state_dict(state_dict)
+        model_path = "models/big_run_29june2026.safetensors"
+        state_dict = load_file(model_path)
+        model.load_state_dict(state_dict, strict=False)
 
         model = torch.compile(model)
 
