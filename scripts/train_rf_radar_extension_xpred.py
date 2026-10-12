@@ -99,7 +99,9 @@ def main():
         shuffle=False,  # file order was shuffled once in Dataset.__init__
                         # (shared across workers) and is read sequentially
                         # for parquet/cache locality.
-        num_workers=8,  # os.cpu_count() // 2,  # Use half the available CPUs
+        num_workers=16,
+        prefetch_factor=4,  # deep queue: absorbs multi-second parquet file
+                            # loads so the GPU rarely starves between steps
         pin_memory=True,
         persistent_workers=True,  # keep workers (and their LRU caches) alive
                                   # across epochs; avoids re-reading files
