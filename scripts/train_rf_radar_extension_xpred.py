@@ -19,7 +19,7 @@ import yaml
 from accelerate.utils import DistributedDataParallelKwargs
 from safetensors.torch import save_file
 
-# 
+#
 from torch.optim import Muon
 
 from safetensors.torch import load_file
@@ -40,7 +40,7 @@ from meteolibre_model.models.jit3d_dual_v2 import DualJiT3D
 config_path = os.path.join(project_root, "meteolibre_model/config/configs.yml")
 with open(config_path) as f:
     config = yaml.safe_load(f)
-params = config['model_v24_mtg_europe_lightning_radar_shortcut']
+params = config['model_v27_mtg_europe_lightning_radar_shortcut']
 
 
 def main():
@@ -121,11 +121,11 @@ def main():
         """Wrapper to make a list of optimizers behave like a single one."""
         def __init__(self, optimizers):
             self.optimizers = optimizers
-        
+
         def step(self):
             for opt in self.optimizers:
                 opt.step()
-                
+
         def zero_grad(self):
             for opt in self.optimizers:
                 opt.zero_grad()
@@ -149,19 +149,19 @@ def main():
 
         model = torch.compile(model)
 
-        # here we 
+        # here we
 
         # Split params: Muon only accepts strictly 2D tensors
         muon_params, adamw_params = get_grouped_params(model)
-        
+
         # 1. Muon for Transformer Internals (Matrices)
         # Note: Adjust momentum/nesterov args as per your Heavyball version if needed
         opt_muon = Muon(muon_params, lr=learning_rate, momentum=0.95, weight_decay=0.1)
-        
+
         # 2. AdamW for Conv3d, Embeddings, Norms, Biases
         # Usually AdamW needs a lower LR than Muon
         opt_adam = torch.optim.AdamW(adamw_params, lr=learning_rate / 3, weight_decay=0.01)
-        
+
         # Create a list for Accelerate
         optimizer = [opt_muon, opt_adam]
     else:
@@ -269,7 +269,7 @@ def main():
                     tb_tracker.writer.add_image(
                         "Generated vs Target (normalized)", grid_normalized, epoch
                     )
-                
+
 
 
         # This part for saving the model was already correct
