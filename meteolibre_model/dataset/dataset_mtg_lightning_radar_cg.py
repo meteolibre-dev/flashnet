@@ -15,10 +15,8 @@ import ast
 
 import numpy as np
 import scipy.sparse as sp
-import random
 import pyarrow.parquet as pq
 
-from torch.utils.data import get_worker_info
 import torch
 import torch.distributed as dist
 
@@ -28,18 +26,31 @@ from suncalc import get_position
 
 class MeteoLibreMapDataset(torch.utils.data.Dataset):
     """
-    An advanced map-style Dataset that improves upon the cached version by
-    shuffling the order of Parquet files differently for each DataLoader worker.
+    Map-style Dataset with LRU-cached parquet reads over the local clone of
+    the meteolibre-dev/weather_mtg_europe_lightning_128_1km dataset.
 
-    This ensures that workers are likely to request different files at the
-    same time, which can improve data loading randomness and potentially reduce
-    contention for the same files if they were on a shared network drive.
+    The order of Parquet files is shuffled ONCE in __init__ (single seeded
+    generator, offset by the DDP rank if distributed is initialised) and is
+    then shared by all forked DataLoader workers: every worker uses the SAME
+    index -> file mapping.
+
+    This is critical for the per-worker LRU cache: as workers advance through
+    the shared shuffled file order, the working set at any moment is only a
+    handful of files, so whichever worker grabs a batch, the file is already
+    hot in its cache. (The previous design reshuffled files per worker, which
+    made every batch a likely cold miss and blew up RAM with up to
+    num_workers * cache_size DISTINCT DataFrames -- workers stalled, GPU 0%.)
+
+    It also guarantees full per-epoch coverage: with shuffle=False the
+    DataLoader fetches every index exactly once and the fixed mapping means
+    every record is seen exactly once per epoch.
 
     Args:
         localrepo (str): The path to the local repository.
         cache_size (int): The number of DataFrames to keep in the in-memory cache.
-        seed (int): A base seed used to ensure reproducible shuffling across runs.
-                    Each worker's shuffle seed will be `seed + worker_id`.
+        seed (int): Base seed for the one-time file-order shuffle (offset by
+                    the DDP rank under distributed training, so ranks explore
+                    different orders).
     """
 
     def __init__(self, localrepo: str, cache_size: int = 8, seed: int = 42, nb_temporal: int = 5):
@@ -52,15 +63,22 @@ class MeteoLibreMapDataset(torch.utils.data.Dataset):
         # Find all parquet files. We start with a sorted list for consistency.
         data_path = os.path.join(self.localrepo, "data", "*.parquet")
         data_v1_path = os.path.join(self.localrepo, "data_v1", "*.parquet")
-        self.base_file_paths = sorted(glob.glob(data_path) + glob.glob(data_v1_path))
+        candidates = sorted(glob.glob(data_path) + glob.glob(data_v1_path))
 
-        # we remove the last one
-        self.base_file_paths = self.base_file_paths
-
-        if not self.base_file_paths:
+        if not candidates:
             raise FileNotFoundError(f"No Parquet files found at '{data_path}'.")
 
-        self.file_paths = self.base_file_paths
+        # Shuffle ONCE here so forked DataLoader workers all inherit the SAME
+        # index -> file mapping (cache locality + full per-epoch coverage).
+        # Offset by the DDP rank so distributed ranks explore different orders.
+        shuffle_seed = self.seed
+        if dist.is_available() and dist.is_initialized():
+            shuffle_seed += dist.get_rank()
+        g = torch.Generator()
+        g.manual_seed(shuffle_seed)
+        perm = torch.randperm(len(candidates), generator=g).tolist()
+        self.base_file_paths = [candidates[i] for i in perm]
+        self.file_paths = list(self.base_file_paths)
 
         # Initialize an LRU cache for this worker
         self.cache = OrderedDict()
@@ -168,41 +186,6 @@ class MeteoLibreMapDataset(torch.utils.data.Dataset):
         return batch_dict
 
     def __getitem__(self, index: int) -> dict:
-        if not getattr(self, "worker_initialized", False):
-            worker_info = get_worker_info()
-            if worker_info is not None:
-                # We are in a worker process. Shuffle the files based on worker ID.
-                worker_id = worker_info.id
-                # print("worker_id", worker_id)
-
-                # Get rank of the process to ensure different shuffling across GPUs
-                rank = 0
-                if dist.is_available() and dist.is_initialized():
-                    rank = dist.get_rank()
-
-                # print("rank", rank)
-
-                # Create a generator with a seed unique to this worker and the base seed
-                g = torch.Generator()
-
-                seed = (
-                    self.seed
-                    + worker_id
-                    + rank * worker_info.num_workers
-                    + random.randint(0, 1000)
-                )  # + round(datetime.now().timestamp() * 1000)
-                g.manual_seed(seed)
-
-                # Get a random permutation of indices and apply it to the file list
-                perm = torch.randperm(len(self.base_file_paths), generator=g).tolist()
-                self.file_paths = [self.base_file_paths[i] for i in perm]
-
-                # recompute
-                self.records_per_file_list = [self.records_per_file_list[i] for i in perm]
-                self.cumulative_records = np.cumsum([0] + self.records_per_file_list[:-1]).tolist()
-
-            self.worker_initialized = True
-
         if index < 0 or index >= self.total_records:
             raise IndexError(
                 f"Index {index} out of range for dataset with size {self.total_records}"
@@ -221,15 +204,16 @@ class MeteoLibreMapDataset(torch.utils.data.Dataset):
 
         data_df = self._get_dataframe(file_index)
 
-        record = data_df.iloc[row_index_in_file]
-        return self._preprocess(date, record)
-
+        # Skip a corrupt/unreadable row by wrapping to a neighbour
+        # (live handler -- wraps the actual fetch, unlike the old dead code).
         try:
             record = data_df.iloc[row_index_in_file]
             return self._preprocess(date, record)
         except Exception as e:
             print(
-                f"Bad indexing for index {index}, file_index {file_index}, row_index {row_index_in_file}. Error: {e}"
+                f"[MeteoLibreMapDataset] bad row index={index}, "
+                f"file_index={file_index}, row={row_index_in_file}. Error: {e}",
+                flush=True,
             )
-            return self.__getitem__((index + 64) % self.total_records)
+            return self.__getitem__((index + 1) % self.total_records)
 

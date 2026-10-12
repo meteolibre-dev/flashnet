@@ -96,9 +96,14 @@ def main():
     dataloader = DataLoader(
         dataset,
         batch_size=batch_size,
-        shuffle=False,
+        shuffle=False,  # file order was shuffled once in Dataset.__init__
+                        # (shared across workers) and is read sequentially
+                        # for parquet/cache locality.
         num_workers=8,  # os.cpu_count() // 2,  # Use half the available CPUs
         pin_memory=True,
+        persistent_workers=True,  # keep workers (and their LRU caches) alive
+                                  # across epochs; avoids re-reading files
+                                  # from scratch every epoch.
     )
 
     # Initialize model
