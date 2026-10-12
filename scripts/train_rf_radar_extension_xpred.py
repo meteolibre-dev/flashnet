@@ -87,7 +87,7 @@ def main():
     # Initialize dataset
     dataset = MeteoLibreMapDataset(
         localrepo=params['dataset_path'],
-        cache_size=10,
+        cache_size=4,
         seed=seed,
         nb_temporal=7
     )
@@ -97,7 +97,7 @@ def main():
         dataset,
         batch_size=batch_size,
         shuffle=False,
-        num_workers=16,  # os.cpu_count() // 2,  # Use half the available CPUs
+        num_workers=8,  # os.cpu_count() // 2,  # Use half the available CPUs
         pin_memory=True,
     )
 
