@@ -160,11 +160,22 @@ class MeteoLibreMapDataset(torch.utils.data.Dataset):
             .reshape(record["cg_lightning_shape"])
             .copy()
         )
+        # cg_lightning is all-NaN in data_v2/ and data_wa/ (CG product
+        # unavailable for those regions/times): a NaN here would flow
+        # straight into the loss -> fill with 0.0 (= no CG strikes).
+        cg_lightning_patch_data = np.where(
+            np.isnan(cg_lightning_patch_data), 0.0, cg_lightning_patch_data
+        )
 
         lightning_patch_data = (
             np.frombuffer(record["lightning_data"], dtype=record["lightning_dtype"])
             .reshape(record["lightning_shape"])
             .copy()
+        )
+        # defensive: same treatment for the total-lightning channel (currently
+        # clean in every folder, but cheap insurance against NaN loss).
+        lightning_patch_data = np.where(
+            np.isnan(lightning_patch_data), 0.0, lightning_patch_data
         )
 
         # in case of bad formatting
