@@ -87,7 +87,7 @@ def main():
     # Initialize dataset
     dataset = MeteoLibreMapDataset(
         localrepo=params['dataset_path'],
-        cache_size=4,
+        cache_size=2,
         seed=seed,
         nb_temporal=7
     )
