@@ -46,7 +46,10 @@ class MeteoLibreMapDataset(torch.utils.data.Dataset):
     every record is seen exactly once per epoch.
 
     Args:
-        localrepo (str): The path to the local repository.
+        localrepo (str): Root of the local dataset clone. Parquet files are
+            read from *every* ``{localrepo}/data*/`` subdirectory (data/,
+            data_v1/, data_v2/, data_wa/, ...), so new folders are picked up
+            automatically.
         cache_size (int): The number of DataFrames to keep in the in-memory cache.
         seed (int): Base seed for the one-time file-order shuffle (offset by
                     the DDP rank under distributed training, so ranks explore
@@ -60,13 +63,25 @@ class MeteoLibreMapDataset(torch.utils.data.Dataset):
         self.seed = seed  # Store base seed
         self.nb_temporal = nb_temporal
 
-        # Find all parquet files. We start with a sorted list for consistency.
-        data_path = os.path.join(self.localrepo, "data", "*.parquet")
-        data_v1_path = os.path.join(self.localrepo, "data_v1", "*.parquet")
-        candidates = sorted(glob.glob(data_path) + glob.glob(data_v1_path))
+        # Discover parquet files from every data*/ subdirectory (data/,
+        # data_v1/, data_v2/, data_wa/, ... -- new folders are picked up
+        # automatically), sorted for a stable base order.
+        data_dirs = sorted(
+            d
+            for d in glob.glob(os.path.join(self.localrepo, "data*"))
+            if os.path.isdir(d)
+        )
+        candidates = sorted(
+            pq_file
+            for d in data_dirs
+            for pq_file in glob.glob(os.path.join(d, "*.parquet"))
+        )
 
         if not candidates:
-            raise FileNotFoundError(f"No Parquet files found at '{data_path}'.")
+            raise FileNotFoundError(
+                f"No Parquet files found under any 'data*/' subdirectory of "
+                f"'{self.localrepo}'. Found dirs: {data_dirs or '<none>'}"
+            )
 
         # Shuffle ONCE here so forked DataLoader workers all inherit the SAME
         # index -> file mapping (cache locality + full per-epoch coverage).
