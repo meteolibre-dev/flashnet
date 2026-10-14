@@ -38,6 +38,7 @@ class ModelConfig(BaseModel):
     use_residual: bool = False
     parametrization: str = "standard"
     interpolation: str = "linear"
+    sampler: str = "euler"
 
 
 class ServerConfig(BaseModel):
@@ -94,6 +95,7 @@ class Config(BaseModel):
                 context_frames=int(os.getenv("CONTEXT_FRAMES", 4)),
                 use_residual=os.getenv("USE_RESIDUAL", "False").lower() == "true",
                 interpolation=os.getenv("INTERPOLATION", "linear"),
+                sampler=os.getenv("SAMPLER", "euler"),
             ),
             server=ServerConfig(
                 host=os.getenv("SERVER_HOST", "0.0.0.0"),
