@@ -223,7 +223,7 @@ class InferenceEngine:
         with open(config_path) as f:
             config = yaml.safe_load(f)
 
-        self.params = config["model_v26_mtg_europe_lightning_radar_shortcut"]
+        self.params = config["model_v27_mtg_europe_lightning_radar_shortcut"]
 
     def _download_model_from_gcs(self, gcs_path: str, local_path: str) -> None:
         """Download model from Google Cloud Storage.
