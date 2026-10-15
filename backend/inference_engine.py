@@ -86,7 +86,7 @@ def convert_to_cog(input_path: str, delete_original: bool = True) -> str:
             return 256  # fallback
 
         block_size = min(get_optimal_block_size(height), get_optimal_block_size(width), 512)
-        
+
         logger.info(f"Using block size {block_size}x{block_size} for {width}x{height} image")
 
         # Use the deflate profile (already has dtype, compress, tiled, blockxsize, blockysize)
@@ -173,6 +173,7 @@ class InferenceEngine:
         context_frames: int = 4,
         use_residual: bool = False,
         interpolation: str = "linear",
+        sampler: str = "euler",
         device: Optional[str] = None
     ):
         """Initialize the inference engine.
@@ -181,12 +182,19 @@ class InferenceEngine:
             model_path: Path to the model weights
             model_type: Type of model ("jit" or "unet")
             patch_size: Size of patches for tiled inference
-            denoising_steps: Number of denoising steps
+            denoising_steps: NFE budget (number of model evaluations per chunk).
+                "euler" uses one eval per integration step (steps = N);
+                "heun" uses two evals per step (last step: one), so it takes
+                N // 2 integration steps for the same wall-clock cost.
             batch_size: Batch size for processing patches
             context_frames: Number of context frames
             use_residual: Whether to use residual connections
+            sampler: ODE sampler, "euler" (1st order) or "heun" (2nd order)
             device: Device to run inference on (auto-detected if None)
         """
+        if sampler not in ("euler", "heun"):
+            raise ValueError(f"Unknown sampler '{sampler}', expected 'euler' or 'heun'")
+        self.sampler = sampler
         self.model_path = model_path
         self.model_type = model_type
         self.patch_size = patch_size
@@ -303,30 +311,30 @@ class InferenceEngine:
             mask = x <= threshold
             if not mask.any():
                 return x
-            
+
             # Kernel for sum of neighbors (exclude center)
             # 3x3 kernel with center 0, others 1
             channels = x.shape[1]
             kernel = torch.ones(channels, 1, 3, 3, device=x.device, dtype=x.dtype)
             kernel[..., 1, 1] = 0
-            
+
             # Valid pixels
             valid_x = torch.where(mask, torch.tensor(0.0, device=x.device, dtype=x.dtype), x)
             valid_mask = (~mask).to(x.dtype)
-            
+
             # Sum of valid neighbors
             sum_neighbors = F.conv2d(valid_x, kernel, padding=1, groups=channels)
-            
+
             # Count of valid neighbors
             count_neighbors = F.conv2d(valid_mask, kernel, padding=1, groups=channels)
-            
+
             # Avoid division by zero
             avg_neighbors = sum_neighbors / (count_neighbors + 1e-6)
-            
+
             # Replace bad pixels where we have valid neighbors
             fill_mask = mask & (count_neighbors > 0)
             x = torch.where(fill_mask, avg_neighbors, x)
-            
+
             return x
 
     def _get_gaussian_weights(self, patch_size: int, sigma_scale: float = 0.3) -> torch.Tensor:
@@ -422,7 +430,10 @@ class InferenceEngine:
 
         c_radar = getattr(initial_context, 'c_radar', 1)
 
-        half_steps = self.denoising_steps // 2
+        logger.info(
+            f"Sampler: {self.sampler} | denoising_steps (NFE budget): {self.denoising_steps}"
+        )
+
         current_step = 0
         current_high_res_context = initial_context
 
@@ -438,8 +449,22 @@ class InferenceEngine:
             logger.info(f"Generating forecast step {current_step + 1}/{forecast_steps}")
 
 
-            for i in tqdm(range(self.denoising_steps), desc="Denoising"):
-                torch.cuda.empty_cache()
+            # ---- Sampler setup ----
+            # `denoising_steps` is an NFE (model-evaluation) budget so that
+            # switching sampler never silently changes inference wall-clock:
+            #   euler: 1 eval / step  -> N integration steps
+            #   heun:  2 evals / step (last step: 1) -> N // 2 integration steps
+            if self.sampler == "heun":
+                n_solver_steps = max(self.denoising_steps // 2, 1)
+            else:
+                n_solver_steps = self.denoising_steps
+
+            def aggregate_velocity(t_val: float) -> torch.Tensor:
+                """One full tiled pass over all patches at noise level t_val.
+
+                Returns the Gaussian-weighted average velocity field
+                (float32, full resolution).
+                """
                 # Use bfloat16 for accumulation to save memory
                 aggregated_velocity = torch.zeros(
                     1, C, this_nb, H_big, W_big, device=self.device, dtype=torch.bfloat16
@@ -447,10 +472,6 @@ class InferenceEngine:
                 weights_sum = torch.zeros(
                     1, 1, this_nb, H_big, W_big, device=self.device, dtype=torch.bfloat16
                 )
-
-                # Uniform schedule: linearly space t from 1.0 to 0.0
-                t_val = 1.0 - i / self.denoising_steps
-                dt = 1.0 / self.denoising_steps
 
                 t_batch_val = torch.full((1,), t_val, device=self.device)
 
@@ -490,7 +511,7 @@ class InferenceEngine:
                         result_noon = get_position(date_noon, lons[j], lats[j])
 
                         spatial_position = torch.tensor(
-                            [result["azimuth"], result["altitude"], result_noon["altitude"], lats[j] / 20.0],
+                            [result["azimuth"], result["altitude"], result_noon["altitude"], lats[j] / 10.0],
                             device=self.device,
                         )
 
@@ -567,15 +588,47 @@ class InferenceEngine:
                 aggregated_velocity.div_(weights_sum)
 
                 # Convert back to float32 for the update step
-                # We do it this way to ensure high precision for the Euler step
+                # We do it this way to ensure high precision for the solver step
                 averaged_velocity = aggregated_velocity.float()
                 del aggregated_velocity, weights_sum
+                return averaged_velocity
 
-                # x_t = x_t - s_theta * dt
-                x_t_full_res.sub_(averaged_velocity, alpha=dt)
-                x_t_full_res.clamp_(-7, 7)
+            for i in tqdm(range(n_solver_steps), desc=f"Denoising ({self.sampler})"):
+                torch.cuda.empty_cache()
 
-                del averaged_velocity
+                # Uniform schedule: linearly space t from 1.0 to 0.0
+                t_val = 1.0 - i / n_solver_steps
+                dt = 1.0 / n_solver_steps
+
+                if self.sampler == "heun":
+                    # Heun's 2nd-order method (trapezoidal), in-place formulation:
+                    #   v1 = v(x_t, t)
+                    #   x~  = x_t - dt * v1                (predictor, in-place)
+                    #   v2  = v(x~, t - dt)                (corrector eval)
+                    #   x'  = x~ + (dt/2) * (v1 - v2)      (in-place corrector)
+                    # With x-prediction the predictor alone lands exactly on the
+                    # Gaussian-weighted x0 estimate, so on the LAST step (t -> 0)
+                    # it is the correct limit and the corrector is skipped:
+                    # no 1/t blow-up at t = 0.
+                    # Note: v1 (float32, full-res) stays alive during the second
+                    # aggregation pass -> one extra full-res buffer vs Euler.
+                    v1 = aggregate_velocity(t_val)
+                    x_t_full_res.sub_(v1, alpha=dt)
+                    x_t_full_res.clamp_(-7, 7)  # keep the 2nd eval on-manifold
+
+                    if i < n_solver_steps - 1:
+                        v2 = aggregate_velocity(t_val - dt)
+                        x_t_full_res.add_(v1, alpha=0.5 * dt)
+                        x_t_full_res.sub_(v2, alpha=0.5 * dt)
+                        x_t_full_res.clamp_(-7, 7)
+                        del v2
+                    del v1
+                else:
+                    # Euler step: x_t = x_t - s_theta * dt
+                    averaged_velocity = aggregate_velocity(t_val)
+                    x_t_full_res.sub_(averaged_velocity, alpha=dt)
+                    x_t_full_res.clamp_(-7, 7)
+                    del averaged_velocity
 
             torch.cuda.empty_cache()
 

@@ -131,7 +131,7 @@ def apply_blur_with_sigma_batched(x, blur_sigma, n_bins=8, min_kernel=0, sigma_f
     """
     b, c, t, h, w = x.shape
     out = torch.zeros_like(x)
-    
+
     # Discrétise blur_sigma en n_bins niveaux
     sigma_max = blur_sigma.max().item()
     bin_edges = torch.linspace(0, sigma_max + 1e-6, n_bins + 1, device=x.device)
@@ -142,7 +142,7 @@ def apply_blur_with_sigma_batched(x, blur_sigma, n_bins=8, min_kernel=0, sigma_f
         mask = bin_ids == bin_idx
         if not mask.any():
             continue
-        
+
         s = bin_centers[bin_idx].item()
         x_bin = x[mask]  # (B_bin, C, T, H, W)
         b_bin = x_bin.shape[0]
@@ -217,17 +217,17 @@ def trainer_step(
     t_emp = t_emp[torch.randperm(num_emp, device=device)]
 
     # # log norm sampling for t
-    # eps = torch.randn(num_emp, device=device)
-    # t_emp = torch.sigmoid(-0.5 + 1.2 * eps).clamp(1e-4, 1 - 1e-4)
+    eps = torch.randn(num_emp, device=device)
+    t_emp = torch.sigmoid(-0.5 + 1.2 * eps).clamp(1e-4, 1 - 1e-4)
 
-    # On-manifold context augmentation: blur + per-sample amplitude jitter.
+    # On-manifold context augmentation: blur.
     #
     # Rationale (validated in AR_drifting/FINDINGS_MANIFOLD.md):
     #   - The AR-rollout failure mode is exposure bias — the model at inference
     #     feeds its own slightly-degraded outputs back as context. On structured
     #     data the degradation looks like a *wider, lower-amplitude* version of
     #     the true frame, NOT like isotropic per-pixel noise.
-    #   - Gaussian blur + multiplicative amplitude jitter is a plausible
+    #   - Gaussian blur is a plausible
     #     on-manifold perturbation (it looks like real data, just slightly
     #     mis-rendered) and teaches the model to sharpen/deblur a degraded
     #     context. Pixel-space additive noise breaks the smooth profile and
@@ -241,17 +241,6 @@ def trainer_step(
         blur_sigma = t_emp_blur * sigma  # (B,)
         x_context_t = apply_blur_with_sigma_batched(x_context, blur_sigma)
 
-        # Per-sample multiplicative amplitude jitter (±~20% std in the champion
-        # config). Broadcasts as (B, 1, 1, 1, 1) so it scales every element of a
-        # sample's context by the same factor — preserves the spatial/temporal
-        # structure, only the overall amplitude is perturbed.
-        # Applied to only 50% of samples so the model still frequently sees
-        # clean context (prevents over-regularization / loss of calibration).
-        amplitude_jitter_std = 0.20
-        amplitude_jitter_prob = 0.5
-        jitter_mask = (torch.rand(b, device=device) < amplitude_jitter_prob).view(b, 1, 1, 1, 1)
-        scale = 1.0 + amplitude_jitter_std * torch.randn(b, 1, 1, 1, 1, device=device)
-        x_context_t = x_context_t * (jitter_mask * scale + ~jitter_mask)
     else:
         x_context_t = x_context
 
@@ -286,7 +275,7 @@ def trainer_step(
         # linear: da/dt = -1  =>  empirical 1/t^2 upweighting of small t
         weight = 1.0 / (t_emp.view(b, 1, 1, 1, 1) + 1e-2) ** 2
 
-    weight = weight.clamp(0.9, 10.)
+    weight = weight.clamp(0.9, 15.)
 
     # direct x-loss
     loss_sat     = (weight * (x_sat_pred_emp - x0_emp[:, :c_sat]) ** 2)[mask_emp].mean()
@@ -304,6 +293,7 @@ def full_image_generation(
     nb_element=1,
     normalize_input=True,
     use_residual=True,
+    sampler="euler",
 ):
     model.eval()
     with torch.no_grad():
@@ -328,34 +318,54 @@ def full_image_generation(
         batch_size, nb_channel, nb_context, h, w = x_context.shape
         x_t = torch.randn(batch_size, nb_channel, nb_forecasted_frame, h, w, device=device)
 
-        d_const = 1.0 / steps
-        t_val = 1.0
-
-        for _ in range(steps):
-            t_batch = torch.full((batch_size,), t_val, device=device)
+        def predict_x0(x_t_cur, t_val_cur):
+            t_batch = torch.full((batch_size,), t_val_cur, device=device)
             d_batch = torch.full((batch_size,), 0., device=device)
 
-            # to comment if false
-            x_context_t = x_context
-
-            model_input = torch.cat([x_context_t, x_t], dim=2)
+            model_input = torch.cat([x_context, x_t_cur], dim=2)
             context_global = torch.cat([context_info, d_batch.unsqueeze(1), t_batch.unsqueeze(1)], dim=1)
 
             sat_x_pred, lightning_x_pred = model(
                 model_input[:, :c_sat].float(), model_input[:, c_sat:].float(), context_global.float()
             )
+            return torch.cat([sat_x_pred, lightning_x_pred], dim=1)[:, :, model.context_frames:]
 
-            x_pred = torch.cat([sat_x_pred, lightning_x_pred], dim=1)[:, :, model.context_frames:]
-
-            # Euler step: x_{t-dt} = x_t - v(x_t, t) * dt
+        def velocity(x_t_cur, x_pred_cur, t_val_cur):
             # For linear:     alpha(t) = 1 - t      => v = (x_t - x_pred) / t
             # For polynomial: alpha(t) = 1 - sqrt(t) => v = (x_t - x_pred) / (2 * t)
             if interpolation == "polynomial":
-                s_theta = (x_t - x_pred) / (2 * t_val + 1e-8)
+                return (x_t_cur - x_pred_cur) / (2 * t_val_cur + 1e-8)
+            return (x_t_cur - x_pred_cur) / t_val_cur
+
+        # `steps` is an NFE budget (model evaluations): heun costs 2 evals per
+        # step (1 on the last step), so it uses half as many integration steps
+        # for the same model-call count as euler.
+        if sampler not in ("euler", "heun"):
+            raise ValueError(f"Unknown sampler '{sampler}', expected 'euler' or 'heun'")
+        n_solver_steps = steps if sampler == "euler" else max(steps // 2, 1)
+        d_const = 1.0 / n_solver_steps
+        t_val = 1.0
+
+        for i in range(n_solver_steps):
+            x_pred = predict_x0(x_t, t_val)
+
+            if sampler == "heun":
+                # Heun's 2nd-order method. With x-prediction the predictor step
+                # alone lands on the (frozen) x0 estimate, so the LAST step
+                # naturally ends on x_pred as t -> 0 (corrector skipped: no 1/t
+                # blow-up at t = 0).
+                v1 = velocity(x_t, x_pred, t_val)
+                x_t = (x_t - v1 * d_const).clamp(-7, 8)
+
+                if i < n_solver_steps - 1:
+                    t_next = t_val - d_const
+                    v2 = velocity(x_t, predict_x0(x_t, t_next), t_next)
+                    x_t = (x_t + 0.5 * d_const * (v1 - v2)).clamp(-7, 8)
             else:
-                s_theta = (x_t - x_pred) / t_val
-            x_t = x_t - s_theta * d_const
-            x_t = x_t.clamp(-7, 8)
+                # Euler step: x_{t-dt} = x_t - v(x_t, t) * dt
+                s_theta = velocity(x_t, x_pred, t_val)
+                x_t = x_t - s_theta * d_const
+                x_t = x_t.clamp(-7, 8)
 
             t_val -= d_const
 

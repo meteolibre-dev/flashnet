@@ -19,7 +19,7 @@ import yaml
 from accelerate.utils import DistributedDataParallelKwargs
 from safetensors.torch import save_file
 
-# 
+#
 from torch.optim import Muon
 
 from safetensors.torch import load_file
@@ -40,7 +40,7 @@ from meteolibre_model.models.jit3d_dual_v2 import DualJiT3D
 config_path = os.path.join(project_root, "meteolibre_model/config/configs.yml")
 with open(config_path) as f:
     config = yaml.safe_load(f)
-params = config['model_v24_mtg_europe_lightning_radar_shortcut']
+params = config['model_v27_mtg_europe_lightning_radar_shortcut']
 
 
 def main():
@@ -87,7 +87,7 @@ def main():
     # Initialize dataset
     dataset = MeteoLibreMapDataset(
         localrepo=params['dataset_path'],
-        cache_size=10,
+        cache_size=2,
         seed=seed,
         nb_temporal=7
     )
@@ -96,9 +96,16 @@ def main():
     dataloader = DataLoader(
         dataset,
         batch_size=batch_size,
-        shuffle=False,
-        num_workers=16,  # os.cpu_count() // 2,  # Use half the available CPUs
+        shuffle=False,  # file order was shuffled once in Dataset.__init__
+                        # (shared across workers) and is read sequentially
+                        # for parquet/cache locality.
+        num_workers=16,
+        prefetch_factor=4,  # deep queue: absorbs multi-second parquet file
+                            # loads so the GPU rarely starves between steps
         pin_memory=True,
+        persistent_workers=True,  # keep workers (and their LRU caches) alive
+                                  # across epochs; avoids re-reading files
+                                  # from scratch every epoch.
     )
 
     # Initialize model
@@ -121,11 +128,11 @@ def main():
         """Wrapper to make a list of optimizers behave like a single one."""
         def __init__(self, optimizers):
             self.optimizers = optimizers
-        
+
         def step(self):
             for opt in self.optimizers:
                 opt.step()
-                
+
         def zero_grad(self):
             for opt in self.optimizers:
                 opt.zero_grad()
@@ -143,25 +150,25 @@ def main():
         print("Jit model")
         model = DualJiT3D(**model_params)
 
-        # model_path = "models/epoch_91_mtg_meteofrance_.safetensors"
-        #state_dict = load_file(model_path)
-        #model.load_state_dict(state_dict)
+        model_path = "models/big_run_29june2026.safetensors"
+        state_dict = load_file(model_path)
+        model.load_state_dict(state_dict, strict=False)
 
         model = torch.compile(model)
 
-        # here we 
+        # here we
 
         # Split params: Muon only accepts strictly 2D tensors
         muon_params, adamw_params = get_grouped_params(model)
-        
+
         # 1. Muon for Transformer Internals (Matrices)
         # Note: Adjust momentum/nesterov args as per your Heavyball version if needed
-        opt_muon = Muon(muon_params, lr=learning_rate, momentum=0.95, weight_decay=0.1)
-        
+        opt_muon = torch.optim.AdamW(muon_params, lr=learning_rate, weight_decay=0.01)
+
         # 2. AdamW for Conv3d, Embeddings, Norms, Biases
         # Usually AdamW needs a lower LR than Muon
-        opt_adam = torch.optim.AdamW(adamw_params, lr=learning_rate / 3, weight_decay=0.01)
-        
+        opt_adam = torch.optim.AdamW(adamw_params, lr=learning_rate, weight_decay=0.01)
+
         # Create a list for Accelerate
         optimizer = [opt_muon, opt_adam]
     else:
@@ -269,7 +276,7 @@ def main():
                     tb_tracker.writer.add_image(
                         "Generated vs Target (normalized)", grid_normalized, epoch
                     )
-                
+
 
 
         # This part for saving the model was already correct

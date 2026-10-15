@@ -27,7 +27,7 @@ class GCPConfig(BaseModel):
 class ModelConfig(BaseModel):
     """Model configuration."""
     model_path: str = "/tmp/flashnet_cache/model.safetensors"
-    model_gcs_path: str = "gs://eumetsat_mtg_preprocess/assets/model_v16_mtg_europe_lightning_shortcut_radar_e144.safetensors"
+    model_gcs_path: str = "gs://eumetsat_mtg_preprocess/assets_models/finetune_15oct2026_e3.safetensors"
     model_type: str = "jit"
     patch_size: int = 128
     denoising_steps: int = 128
@@ -38,6 +38,7 @@ class ModelConfig(BaseModel):
     use_residual: bool = False
     parametrization: str = "standard"
     interpolation: str = "linear"
+    sampler: str = "euler"
 
 
 class ServerConfig(BaseModel):
@@ -94,6 +95,7 @@ class Config(BaseModel):
                 context_frames=int(os.getenv("CONTEXT_FRAMES", 4)),
                 use_residual=os.getenv("USE_RESIDUAL", "False").lower() == "true",
                 interpolation=os.getenv("INTERPOLATION", "linear"),
+                sampler=os.getenv("SAMPLER", "euler"),
             ),
             server=ServerConfig(
                 host=os.getenv("SERVER_HOST", "0.0.0.0"),
