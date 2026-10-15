@@ -86,7 +86,7 @@ def convert_to_cog(input_path: str, delete_original: bool = True) -> str:
             return 256  # fallback
 
         block_size = min(get_optimal_block_size(height), get_optimal_block_size(width), 512)
-        
+
         logger.info(f"Using block size {block_size}x{block_size} for {width}x{height} image")
 
         # Use the deflate profile (already has dtype, compress, tiled, blockxsize, blockysize)
@@ -311,30 +311,30 @@ class InferenceEngine:
             mask = x <= threshold
             if not mask.any():
                 return x
-            
+
             # Kernel for sum of neighbors (exclude center)
             # 3x3 kernel with center 0, others 1
             channels = x.shape[1]
             kernel = torch.ones(channels, 1, 3, 3, device=x.device, dtype=x.dtype)
             kernel[..., 1, 1] = 0
-            
+
             # Valid pixels
             valid_x = torch.where(mask, torch.tensor(0.0, device=x.device, dtype=x.dtype), x)
             valid_mask = (~mask).to(x.dtype)
-            
+
             # Sum of valid neighbors
             sum_neighbors = F.conv2d(valid_x, kernel, padding=1, groups=channels)
-            
+
             # Count of valid neighbors
             count_neighbors = F.conv2d(valid_mask, kernel, padding=1, groups=channels)
-            
+
             # Avoid division by zero
             avg_neighbors = sum_neighbors / (count_neighbors + 1e-6)
-            
+
             # Replace bad pixels where we have valid neighbors
             fill_mask = mask & (count_neighbors > 0)
             x = torch.where(fill_mask, avg_neighbors, x)
-            
+
             return x
 
     def _get_gaussian_weights(self, patch_size: int, sigma_scale: float = 0.3) -> torch.Tensor:
@@ -511,7 +511,7 @@ class InferenceEngine:
                         result_noon = get_position(date_noon, lons[j], lats[j])
 
                         spatial_position = torch.tensor(
-                            [result["azimuth"], result["altitude"], result_noon["altitude"], lats[j] / 20.0],
+                            [result["azimuth"], result["altitude"], result_noon["altitude"], lats[j] / 10.0],
                             device=self.device,
                         )
 
