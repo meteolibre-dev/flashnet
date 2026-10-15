@@ -27,7 +27,7 @@ class GCPConfig(BaseModel):
 class ModelConfig(BaseModel):
     """Model configuration."""
     model_path: str = "/tmp/flashnet_cache/model.safetensors"
-    model_gcs_path: str = "gs://eumetsat_mtg_preprocess/assets/model_v16_mtg_europe_lightning_shortcut_radar_e144.safetensors"
+    model_gcs_path: str = "gs://eumetsat_mtg_preprocess/assets_models/finetune_15oct2026_e3.safetensors"
     model_type: str = "jit"
     patch_size: int = 128
     denoising_steps: int = 128
