@@ -793,9 +793,12 @@ class InferenceEngine:
 
                 radar_data = hf["radar_data"][:]
 
-                # nan correction
+                # nan correction (mirrors training preprocessing in dataset_mtg_lightning_radar_cg)
                 isnan_radar = np.isnan(radar_data)
                 radar_data = np.where(isnan_radar, -10000.0, radar_data)
+                # cg_lightning/lightning: NaN means "no strikes" -> 0.0 (100% NaN in west-africa files)
+                cg_lightning_data = np.where(np.isnan(cg_lightning_data), 0.0, cg_lightning_data)
+                lightning_data = np.where(np.isnan(lightning_data), 0.0, lightning_data)
 
                 num_frames = hf.attrs["num_frames"]
                 target_H = hf.attrs["target_height"]
