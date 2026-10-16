@@ -66,7 +66,8 @@ def get_europe_borders() -> "geopandas.GeoDataFrame":
 
     print("Downloading Natural Earth country borders …")
     gdf = gpd.read_file(NE_COUNTRIES_URL)
-    europe = gdf.cx[-12:40, 30:72]
+    # Cover Europe AND Africa (and margin) so regional tiles always get borders.
+    europe = gdf.cx[-30:60, -40:72]
     _borders_gdf = europe
     return europe
 
@@ -79,7 +80,7 @@ def get_europe_provinces() -> "geopandas.GeoDataFrame":
 
     print("Downloading Natural Earth provinces / departments …")
     gdf = gpd.read_file(NE_PROVINCES_URL)
-    europe = gdf.cx[-12:40, 30:72]
+    europe = gdf.cx[-30:60, -40:72]
     _provinces_gdf = europe
     return europe
 
@@ -92,7 +93,7 @@ def get_europe_cities() -> "geopandas.GeoDataFrame":
 
     print("Downloading Natural Earth populated places …")
     gdf = gpd.read_file(NE_CITIES_URL)
-    europe = gdf.cx[-12:40, 30:72]
+    europe = gdf.cx[-30:60, -40:72]
     _cities_gdf = europe
     return europe
 
@@ -485,8 +486,8 @@ def normalize_radar_to_uint8(arr_dbz: np.ndarray) -> np.ndarray:
 CHANNEL_CONFIG = {
     "lightning": {"vmin": 0, "vmax": 4, "cmap": "lightning", "borders": True},
     "radar":     {"vmin": 0, "vmax": 75, "cmap": "radar",     "borders": True},
-    "sat_ch0":   {"vmin": 0, "vmax": 12, "cmap": "default",   "borders": False},
-    "sat_ch1":   {"vmin": 3, "vmax": 120, "cmap": "ir",       "borders": False},
+    "sat_ch0":   {"vmin": 0, "vmax": 12, "cmap": "default",  "borders": True},
+    "sat_ch1":   {"vmin": 3, "vmax": 120, "cmap": "ir",      "borders": True},
     "sat_ch2":   {"vmin": -3, "vmax": 120, "cmap": "ir",      "borders": False},
 }
 
@@ -680,7 +681,7 @@ def build_channel_frame(
     bgr = rgba_to_bgr(rgba)
 
     if cfg["borders"] and borders_gdf is not None:
-        border_color = (180, 180, 180) if cmap_type == "lightning" else (150, 150, 150)
+        border_color = (200, 200, 200) if cmap_type == "lightning" else (170, 170, 170)
         bgr = draw_borders_on_frame(bgr, transform, borders_gdf, color=border_color, thickness=1)
 
     # Upscale small frames BEFORE drawing provinces/cities so they stay crisp
