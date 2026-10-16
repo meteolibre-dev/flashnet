@@ -194,6 +194,16 @@ def draw_borders_on_frame(
     h, w = frame.shape[:2]
     result = frame.copy()
 
+    # Spatial pre-filter: keep only polygons whose lon/lat bbox intersects the
+    # frame. Avoids converting every vertex of the cached global layer per frame.
+    try:
+        lon_min, lat_max = ~transform * (0, 0)
+        lon_max, lat_min = ~transform * (w, h)
+        m = 2.0  # degrees of margin
+        gdf = gdf.cx[lon_min - m : lon_max + m, lat_min - m : lat_max + m]
+    except Exception:
+        pass
+
     for geom in gdf.geometry:
         if geom.geom_type == "Polygon":
             rings = [geom.exterior]
@@ -228,6 +238,14 @@ def draw_provinces_on_frame(
     """Draw province / department boundaries (thinner, dimmer than country borders)."""
     h, w = frame.shape[:2]
     result = frame.copy()
+
+    try:
+        lon_min, lat_max = ~transform * (0, 0)
+        lon_max, lat_min = ~transform * (w, h)
+        m = 2.0
+        gdf = gdf.cx[lon_min - m : lon_max + m, lat_min - m : lat_max + m]
+    except Exception:
+        pass
 
     for geom in gdf.geometry:
         if geom is None or geom.is_empty:
