@@ -3,6 +3,7 @@ Inference engine that encapsulates the tiled inference logic.
 """
 
 import os
+import re
 import sys
 import logging
 from pathlib import Path
@@ -174,6 +175,9 @@ class InferenceEngine:
         use_residual: bool = False,
         interpolation: str = "linear",
         sampler: str = "euler",
+        window_type: str = "kaiser_bessel",
+        kaiser_beta: float = 8.0,
+        tile_jitter: bool = True,
         device: Optional[str] = None
     ):
         """Initialize the inference engine.
@@ -190,11 +194,22 @@ class InferenceEngine:
             context_frames: Number of context frames
             use_residual: Whether to use residual connections
             sampler: ODE sampler, "euler" (1st order) or "heun" (2nd order)
+            window_type: Patch blending window ("kaiser_bessel" or "gaussian")
+            kaiser_beta: Beta shape parameter for Kaiser-Bessel-Derived window
+            tile_jitter: Whether to apply sub-patch ViT de-aliasing + cycle16
+                quadrant jitter across ODE evaluations
             device: Device to run inference on (auto-detected if None)
         """
         if sampler not in ("euler", "heun"):
             raise ValueError(f"Unknown sampler '{sampler}', expected 'euler' or 'heun'")
+        if window_type not in ("kaiser_bessel", "gaussian"):
+            raise ValueError(
+                f"Unknown window_type '{window_type}', expected 'kaiser_bessel' or 'gaussian'"
+            )
         self.sampler = sampler
+        self.window_type = window_type
+        self.kaiser_beta = float(kaiser_beta)
+        self.tile_jitter = bool(tile_jitter)
         self.model_path = model_path
         self.model_type = model_type
         self.patch_size = patch_size
@@ -346,6 +361,198 @@ class InferenceEngine:
         w_2d = w_2d / w_2d.max()
         return w_2d
 
+    def _get_kaiser_bessel_weights(
+        self,
+        patch_size: int,
+        beta: float = 8.0,
+        min_edge_weight: float = 0.02,
+    ) -> torch.Tensor:
+        """Generate a 2D Kaiser-Bessel-Derived (KBD) flat-top blending window.
+
+        Designed for half-patch (M = patch_size // 2) overlap:
+        - Flat ~1.0 plateau across the tile interior core
+        - Satisfies the Princen-Bradley overlap-add condition across M-pixel seams
+        - Suppresses 1-pixel outer boundary weight to `min_edge_weight` (~0.02 vs
+          0.255 for Gaussian), eliminating tile-border discontinuity bleed while
+          keeping weights strictly positive everywhere.
+        """
+        half = patch_size // 2
+        kaiser = torch.kaiser_window(
+            half + 1,
+            periodic=False,
+            beta=beta,
+            dtype=torch.float32,
+            device=self.device,
+        )
+        cumsum = torch.cumsum(kaiser, dim=0)
+        rising = torch.sqrt(cumsum[:-1] / cumsum[-1])
+        w_1d = torch.cat([rising, rising.flip(0)], dim=0)
+        if w_1d.numel() < patch_size:
+            w_1d = F.pad(w_1d.view(1, 1, -1), (0, patch_size - w_1d.numel()), mode="replicate").view(-1)
+        w_1d = w_1d.clamp(min=min_edge_weight)
+        w_2d = w_1d.unsqueeze(1) * w_1d.unsqueeze(0)
+        w_2d = w_2d / w_2d.max()
+        return w_2d
+
+    def _get_patch_weights(self, patch_size: int) -> torch.Tensor:
+        """Return the configured 2D patch blending window."""
+        if self.window_type == "kaiser_bessel":
+            return self._get_kaiser_bessel_weights(patch_size, beta=self.kaiser_beta)
+        return self._get_gaussian_weights(patch_size)
+
+    def _get_vit_patch_size(self) -> int:
+        """Return horizontal ViT patch size (default 8 for DualJiT3D)."""
+        ps = self.params.get("model", {}).get("patch_size", [1, 8, 8])
+        if isinstance(ps, (list, tuple)) and len(ps) >= 2:
+            return int(ps[1])
+        if isinstance(ps, int):
+            return int(ps)
+        return 8
+
+    @staticmethod
+    def _get_starts_with_offset(total: int, size: int, offset: int) -> list[int]:
+        """Generate 1D patch start coordinates anchored at `offset` covering [0, total)."""
+        if total <= size:
+            return [0]
+        offset = int(offset) % size
+        starts = list(range(offset, total - size + 1, size))
+        if offset > 0:
+            starts = [0] + starts
+        if not starts or starts[-1] != total - size:
+            starts.append(total - size)
+        return starts
+
+    def _build_patch_coords_for_offset(
+        self,
+        H_big: int,
+        W_big: int,
+        ox1: int = 0,
+        oy1: int = 0,
+        dealias_second_grid: bool = True,
+    ) -> list[tuple[int, int]]:
+        """Build dual-grid patch coordinates with guaranteed 2-tile border coverage.
+
+        Args:
+            H_big: Full image height
+            W_big: Full image width
+            ox1: Horizontal anchor offset for Grid 1 in [0, patch_size)
+            oy1: Vertical anchor offset for Grid 1 in [0, patch_size)
+            dealias_second_grid: If True, shift Grid 2 by P//2 + p_vit//2 (e.g. 68 px
+                instead of 64 px) so Grid 1 and Grid 2 sit at opposite phases (4 px apart)
+                of the 8x8 ViT patchify grid within every single ODE evaluation.
+        """
+        P = self.patch_size
+        vit_p = self._get_vit_patch_size()
+        half_shift = P // 2 + (vit_p // 2 if dealias_second_grid else 0)
+
+        ox1 = ox1 % P
+        oy1 = oy1 % P
+        ox2 = (ox1 + half_shift) % P
+        oy2 = (oy1 + half_shift) % P
+
+        x0 = self._get_starts_with_offset(W_big, P, ox1)
+        y0 = self._get_starts_with_offset(H_big, P, oy1)
+        xS = self._get_starts_with_offset(W_big, P, ox2)
+        yS = self._get_starts_with_offset(H_big, P, oy2)
+
+        coords1 = [(x, y) for y in y0 for x in x0]
+        coords2 = [(x, y) for y in yS for x in xS]
+
+        # Preserve deterministic ordering while deduplicating
+        return list(dict.fromkeys(coords1 + coords2))
+
+    def _precompute_grid_states(
+        self,
+        H_big: int,
+        W_big: int,
+        transform: Any,
+        transformer: Any,
+    ) -> list[Dict[str, Any]]:
+        """Precompute patch coordinate states and vectorized (lon, lat) arrays once.
+
+        When `self.tile_jitter` is True, builds the 16-state `cycle16` schedule that:
+        1. Cycles sub-patch offsets through all 16 even 2D phases {0, 2, 4, 6}^2 of the
+           8x8 ViT patchify grid (canceling horizontal, vertical, diagonal, and
+           anti-diagonal ViT patch modes across steps, à la STRATA's `cycle16`).
+        2. Cycles macro tile origins through all 4 quarter-tile quadrants
+           {(0,0), (P/4,0), (0,P/4), (P/4,P/4)} so saddle-point intersections where
+           a vertical seam of Grid 1 meets a horizontal seam of Grid 2 move into the
+           flat-top tile interior on subsequent ODE steps.
+        """
+        P = self.patch_size
+        vit_p = self._get_vit_patch_size()
+        sub_step = max(vit_p // 4, 1)  # 2 px for 8x8 ViT patch
+        macro_step = P // 4            # 32 px for 128x128 tile
+
+        if self.tile_jitter:
+            offsets = []
+            for s in range(16):
+                ix = s % 4
+                iy = (s // 4) % 4
+                ox = (ix % 2) * macro_step + ix * sub_step
+                oy = (iy % 2) * macro_step + iy * sub_step
+                offsets.append((ox, oy))
+        else:
+            offsets = [(0, 0)]
+
+        states = []
+        half_p = P // 2
+        for ox, oy in offsets:
+            coords = self._build_patch_coords_for_offset(
+                H_big,
+                W_big,
+                ox1=ox,
+                oy1=oy,
+                dealias_second_grid=self.tile_jitter,
+            )
+            coords_arr = np.asarray(coords, dtype=np.float64)
+            px = coords_arr[:, 0] + half_p
+            py = coords_arr[:, 1] + half_p
+            x_crs = transform[0] * px + transform[1] * py + transform[2]
+            y_crs = transform[3] * px + transform[4] * py + transform[5]
+
+            if transformer is not None:
+                lons, lats = transformer.transform(x_crs, y_crs)
+                lons = np.asarray(lons, dtype=np.float64)
+                lats = np.asarray(lats, dtype=np.float64)
+            else:
+                lons = x_crs
+                lats = y_crs
+
+            states.append({
+                "offset": (ox, oy),
+                "coords": coords,
+                "lons": lons,
+                "lats": lats,
+            })
+        return states
+
+    def _compute_state_spatial_Position_gpu(
+        self,
+        state: Dict[str, Any],
+        prediction_date: datetime,
+    ) -> torch.Tensor:
+        """Vectorized computation of [azimuth, altitude, noon_altitude, lat/10] for all
+        patches in `state`, transferred to GPU once per autoregressive step.
+        """
+        lons = state["lons"]
+        lats = state["lats"]
+        date_noon = prediction_date.replace(hour=12, minute=0, second=0, microsecond=0)
+
+        res_now = get_position(prediction_date, lons, lats)
+        res_noon = get_position(date_noon, lons, lats)
+
+        spatial_np = np.stack(
+            [
+                np.asarray(res_now["azimuth"], dtype=np.float32),
+                np.asarray(res_now["altitude"], dtype=np.float32),
+                np.asarray(res_noon["altitude"], dtype=np.float32),
+                (lats / 10.0).astype(np.float32),
+            ],
+            axis=1,
+        )
+        return torch.from_numpy(spatial_np).to(self.device, non_blocking=True)
+
     @torch.no_grad()
     def tiled_inference(
         self,
@@ -384,35 +591,9 @@ class InferenceEngine:
         _, C, T_ctx, H_big, W_big = initial_context.shape
         x_t_full_res = torch.randn(1, C, nb_forecast, H_big, W_big, device=self.device)
 
-        patch_weights = self._get_gaussian_weights(self.patch_size)
+        patch_weights = self._get_patch_weights(self.patch_size)
         patch_weights = patch_weights.view(1, 1, 1, self.patch_size, self.patch_size)
-
-        # Create patch coordinates
-        def get_starts(total, size, start_offset):
-            starts = list(range(start_offset, total - size + 1, size))
-            if not starts or starts[-1] != total - size:
-                if total >= size:
-                    starts.append(total - size)
-            return starts
-
-        shift = self.patch_size // 2
-
-        y0 = get_starts(H_big, self.patch_size, 0)
-        x0 = get_starts(W_big, self.patch_size, 0)
-        yS = get_starts(H_big, self.patch_size, shift)
-        xS = get_starts(W_big, self.patch_size, shift)
-
-        # Base grids
-        coords1 = [(x, y) for y in y0 for x in x0] # Grid 1 (0, 0)
-        coords2 = [(x, y) for y in yS for x in xS] # Grid 2 (S, S)
-
-        # Extra bands for top/left/bottom/right coverage (fixes 1-patch overlap at borders)
-        extra_top = [(x, y0[0]) for x in xS]
-        extra_left = [(x0[0], y) for y in yS]
-        extra_bottom = [(x, y0[-1]) for x in xS]
-        extra_right = [(x0[-1], y) for y in yS]
-
-        patch_coords = list(set(coords1 + coords2 + extra_top + extra_left + extra_bottom + extra_right))
+        pw_bf16 = patch_weights.to(torch.bfloat16)
 
         # Get metadata from HDF5 if available
         epsg = getattr(initial_context, 'epsg', 4326)
@@ -425,16 +606,23 @@ class InferenceEngine:
         else:
             transformer = None
 
+        # Precompute tile grid states and vectorized (lon, lat) once
+        grid_states = self._precompute_grid_states(H_big, W_big, transform, transformer)
+        n_grid_states = len(grid_states)
+
         c_sat = getattr(initial_context, 'c_sat', 18)
         c_lightning = getattr(initial_context, 'c_lightning', 1) + getattr(initial_context, 'cg_lightning', 1)
 
         c_radar = getattr(initial_context, 'c_radar', 1)
 
         logger.info(
-            f"Sampler: {self.sampler} | denoising_steps (NFE budget): {self.denoising_steps}"
+            f"Sampler: {self.sampler} | denoising_steps (NFE budget): {self.denoising_steps} | "
+            f"window: {self.window_type} | tile_jitter: {self.tile_jitter} ({n_grid_states} states, "
+            f"~{len(grid_states[0]['coords'])} tiles/step)"
         )
 
         current_step = 0
+        eval_step_counter = 0
         current_high_res_context = initial_context
 
         while current_step < forecast_steps:
@@ -448,6 +636,12 @@ class InferenceEngine:
 
             logger.info(f"Generating forecast step {current_step + 1}/{forecast_steps}")
 
+            # Precompute vectorized suncalc spatial conditioning on GPU once per
+            # forecast step (instead of recomputing per patch inside every ODE step).
+            spatial_gpu_by_state = [
+                self._compute_state_spatial_Position_gpu(state, prediction_date)
+                for state in grid_states
+            ]
 
             # ---- Sampler setup ----
             # `denoising_steps` is an NFE (model-evaluation) budget so that
@@ -462,9 +656,17 @@ class InferenceEngine:
             def aggregate_velocity(t_val: float) -> torch.Tensor:
                 """One full tiled pass over all patches at noise level t_val.
 
-                Returns the Gaussian-weighted average velocity field
+                Returns the window-weighted average velocity field
                 (float32, full resolution).
                 """
+                nonlocal eval_step_counter
+                state_idx = eval_step_counter % n_grid_states
+                eval_step_counter += 1
+
+                state = grid_states[state_idx]
+                patch_coords = state["coords"]
+                state_spatial_gpu = spatial_gpu_by_state[state_idx]
+
                 # Use bfloat16 for accumulation to save memory
                 aggregated_velocity = torch.zeros(
                     1, C, this_nb, H_big, W_big, device=self.device, dtype=torch.bfloat16
@@ -473,60 +675,23 @@ class InferenceEngine:
                     1, 1, this_nb, H_big, W_big, device=self.device, dtype=torch.bfloat16
                 )
 
-                t_batch_val = torch.full((1,), t_val, device=self.device)
-
-                d_batch_val = torch.full((1,), 0, device=self.device)
-
                 for i_batch in range(0, len(patch_coords), self.batch_size):
                     coords_batch = patch_coords[i_batch : i_batch + self.batch_size]
-                    patch_x_t_batch, patch_context_batch, context_global_batch = [], [], []
-                    pixel_xs = [x + self.patch_size // 2 for x, y in coords_batch]
-                    pixel_ys = [y + self.patch_size // 2 for x, y in coords_batch]
-                    lons, lats = [], []
+                    bsz = len(coords_batch)
 
-                    for j in range(len(coords_batch)):
-                        px = pixel_xs[j]
-                        py = pixel_ys[j]
-                        x_crs = transform[0] * px + transform[1] * py + transform[2]
-                        y_crs = transform[3] * px + transform[4] * py + transform[5]
+                    patch_x_t_batch = [
+                        self._extract_patch(x_t_full_res, x_start, y_start, self.patch_size)
+                        for x_start, y_start in coords_batch
+                    ]
+                    patch_context_batch = [
+                        self._extract_patch(current_high_res_context, x_start, y_start, self.patch_size)
+                        for x_start, y_start in coords_batch
+                    ]
 
-                        if transformer:
-                            lon, lat = transformer.transform(x_crs, y_crs)
-                        else:
-                            lon, lat = x_crs, y_crs
-
-                        lons.append(lon)
-                        lats.append(lat)
-
-                    for j, (x_start, y_start) in enumerate(coords_batch):
-                        patch_x_t = self._extract_patch(
-                            x_t_full_res, x_start, y_start, self.patch_size
-                        )
-                        patch_context = self._extract_patch(
-                            current_high_res_context, x_start, y_start, self.patch_size
-                        )
-
-                        result = get_position(prediction_date, lons[j], lats[j])
-                        date_noon = prediction_date.replace(hour=12, minute=0, second=0, microsecond=0)
-                        result_noon = get_position(date_noon, lons[j], lats[j])
-
-                        spatial_position = torch.tensor(
-                            [result["azimuth"], result["altitude"], result_noon["altitude"], lats[j] / 10.0],
-                            device=self.device,
-                        )
-
-                        context_global = torch.cat(
-                            [
-                                spatial_position.unsqueeze(0),
-                                d_batch_val.unsqueeze(-1),
-                                t_batch_val.unsqueeze(-1)
-                            ],
-                            dim=1,
-                        )
-
-                        patch_x_t_batch.append(patch_x_t)
-                        patch_context_batch.append(patch_context)
-                        context_global_batch.append(context_global)
+                    spatial_batch = state_spatial_gpu[i_batch : i_batch + bsz]
+                    d_col = torch.zeros((bsz, 1), device=self.device, dtype=torch.float32)
+                    t_col = torch.full((bsz, 1), t_val, device=self.device, dtype=torch.float32)
+                    context_global_tensor = torch.cat([spatial_batch, d_col, t_col], dim=1)
 
                     model_input = torch.cat(
                         [
@@ -536,25 +701,43 @@ class InferenceEngine:
                         dim=2,
                     )
 
-                    model_input_sat = model_input[:, :c_sat]
-                    model_input_lightning = model_input[:, c_sat : (c_sat + c_lightning)]
+                    model_input_sat = model_input[:, :c_sat].float()
+                    model_input_lightning = model_input[:, c_sat : (c_sat + c_lightning)].float()
+
+                    # Pad partial final batch to `self.batch_size` so `torch.compile`
+                    # sees a single static batch shape and never recompiles on remainders.
+                    if bsz < self.batch_size:
+                        pad_n = self.batch_size - bsz
+                        model_input_sat = torch.cat(
+                            [model_input_sat, model_input_sat[-1:].expand(pad_n, -1, -1, -1, -1)],
+                            dim=0,
+                        )
+                        model_input_lightning = torch.cat(
+                            [model_input_lightning, model_input_lightning[-1:].expand(pad_n, -1, -1, -1, -1)],
+                            dim=0,
+                        )
+                        context_global_tensor = torch.cat(
+                            [context_global_tensor, context_global_tensor[-1:].expand(pad_n, -1)],
+                            dim=0,
+                        )
 
                     with torch.autocast("cuda", dtype=torch.bfloat16):
                         sat_pred_batch, lightning_pred_batch = self.model(
-                            model_input_sat.float(),
-                            model_input_lightning.float(),
-                            torch.cat(context_global_batch, dim=0).float(),
+                            model_input_sat,
+                            model_input_lightning,
+                            context_global_tensor,
                         )
 
-                    del model_input, model_input_sat, model_input_lightning, context_global_batch, patch_x_t_batch, patch_context_batch
+                    if bsz < self.batch_size:
+                        sat_pred_batch = sat_pred_batch[:bsz]
+                        lightning_pred_batch = lightning_pred_batch[:bsz]
+
+                    del model_input, model_input_sat, model_input_lightning, context_global_tensor, patch_x_t_batch, patch_context_batch
 
                     x_pred_batch = torch.cat([sat_pred_batch, lightning_pred_batch], dim=1)[
                         :, :, self.context_frames:, :, :
                     ].to(torch.bfloat16)
                     del sat_pred_batch, lightning_pred_batch
-
-                    # Use bfloat16 for patch weights
-                    pw = patch_weights.to(torch.bfloat16)
 
                     for j, (x_start, y_start) in enumerate(coords_batch):
                         x_t_patch = x_t_full_res[
@@ -574,14 +757,14 @@ class InferenceEngine:
                             ...,
                             y_start : y_start + self.patch_size,
                             x_start : x_start + self.patch_size,
-                        ] += v_patch * pw
+                        ] += v_patch * pw_bf16
 
                         weights_sum[
                             ...,
                             y_start : y_start + self.patch_size,
                             x_start : x_start + self.patch_size,
-                        ] += pw
-                    del x_pred_batch, pw
+                        ] += pw_bf16
+                    del x_pred_batch
 
                 weights_sum[weights_sum == 0] = 1.0
                 # In-place average in bfloat16 to save memory
@@ -818,10 +1001,15 @@ class InferenceEngine:
                     f"Not enough frames. Need {self.context_frames}, found {num_frames}"
                 )
 
-            # Parse date from filename
+            # Parse date from filename (supports both "YYYY-MM-DD_HH-MM_full.h5" and
+            # prefixed names like "inference_h5_YYYY-MM-DD_HH-MM_europe_full.h5")
             filename = os.path.basename(data_path)
-            date_str = filename.split("_full.h5")[0]
-            date_part, time_part = date_str.split("_")[0], date_str.split("_")[1]
+            m = re.search(r"(\d{4}-\d{2}-\d{2})_(\d{2}-\d{2})", filename)
+            if m:
+                date_part, time_part = m.group(1), m.group(2)
+            else:
+                date_str = filename.split("_full.h5")[0]
+                date_part, time_part = date_str.split("_")[0], date_str.split("_")[1]
             year, month, day = map(int, date_part.split("-"))
             hour, minute = map(int, time_part.split("-"))
             initial_date = datetime(year, month, day, hour, minute)

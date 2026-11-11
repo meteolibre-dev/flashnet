@@ -45,6 +45,24 @@ def main() -> None:
     parser.add_argument("--denoising-steps", type=int, default=128)
     parser.add_argument("--batch-size", type=int, default=64)
     parser.add_argument("--sampler", choices=["euler", "heun"], default="euler")
+    parser.add_argument(
+        "--window-type",
+        choices=["kaiser_bessel", "gaussian"],
+        default="kaiser_bessel",
+        help="Patch blending window type (default: kaiser_bessel)",
+    )
+    parser.add_argument(
+        "--kaiser-beta",
+        type=float,
+        default=8.0,
+        help="Beta parameter for Kaiser-Bessel-Derived window (default: 8.0)",
+    )
+    parser.add_argument(
+        "--tile-jitter",
+        action=argparse.BooleanOptionalAction,
+        default=True,
+        help="Enable sub-patch ViT de-aliasing + cycle16 quadrant jitter (default: True)",
+    )
     parser.add_argument("--device", default="cuda")
     args = parser.parse_args()
 
@@ -62,6 +80,9 @@ def main() -> None:
         use_residual=False,
         interpolation="linear",
         sampler=args.sampler,
+        window_type=args.window_type,
+        kaiser_beta=args.kaiser_beta,
+        tile_jitter=args.tile_jitter,
         device=args.device,
     )
 
