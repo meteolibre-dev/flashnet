@@ -39,6 +39,9 @@ class ModelConfig(BaseModel):
     parametrization: str = "standard"
     interpolation: str = "linear"
     sampler: str = "euler"
+    window_type: str = "kaiser_bessel"
+    kaiser_beta: float = 8.0
+    tile_jitter: bool = True
 
 
 class ServerConfig(BaseModel):
@@ -96,6 +99,9 @@ class Config(BaseModel):
                 use_residual=os.getenv("USE_RESIDUAL", "False").lower() == "true",
                 interpolation=os.getenv("INTERPOLATION", "linear"),
                 sampler=os.getenv("SAMPLER", "euler"),
+                window_type=os.getenv("WINDOW_TYPE", "kaiser_bessel"),
+                kaiser_beta=float(os.getenv("KAISER_BETA", "8.0")),
+                tile_jitter=os.getenv("TILE_JITTER", "True").lower() == "true",
             ),
             server=ServerConfig(
                 host=os.getenv("SERVER_HOST", "0.0.0.0"),

@@ -101,6 +101,9 @@ def run_inference(data_path: str, gcs_client=None) -> str:
         use_residual=config.model.use_residual,
         interpolation=config.model.interpolation,
         sampler=config.model.sampler,
+        window_type=config.model.window_type,
+        kaiser_beta=config.model.kaiser_beta,
+        tile_jitter=config.model.tile_jitter,
     )
 
     upload_fn = None
