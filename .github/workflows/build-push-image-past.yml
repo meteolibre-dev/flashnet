@@ -41,6 +41,7 @@ jobs:
       - name: 'Build Container Image'
         run: |
           docker build \
+            --network=host \
             --file ${{ env.DOCKERFILE }} \
             --tag ${{ env.GAR_LOCATION }}-docker.pkg.dev/${{ env.PROJECT_ID }}/${{ env.REPOSITORY }}/${{ env.IMAGE_NAME }}:${{ steps.git-sha.outputs.SHORT_SHA }} \
             --tag ${{ env.GAR_LOCATION }}-docker.pkg.dev/${{ env.PROJECT_ID }}/${{ env.REPOSITORY }}/${{ env.IMAGE_NAME }}:latest \

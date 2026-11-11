@@ -6,7 +6,7 @@ FROM pytorch/pytorch:2.9.1-cuda12.8-cudnn9-runtime
 # Install system dependencies
 # build-essential and git are needed for installing some python packages
 # libgl1... are needed for opencv/image processing libraries if used
-RUN apt-get update && apt-get install -y --no-install-recommends \
+RUN apt-get -o Acquire::Retries=5 update && apt-get -o Acquire::Retries=5 install -y --no-install-recommends \
     build-essential \
     git \
     libgl1-mesa-glx \
